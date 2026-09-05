@@ -1,0 +1,31 @@
+{
+    "server": {
+        "host": "main.newnan.city",
+        "port": 25565,
+        "version": "1.20.1",
+        "language": "zh_cn"
+    },
+    "auth": {
+        "authServer": "https://authmc.newnan.city",
+        "sessionServer": "https://authmc.newnan.city",
+        "username": "YOUR_USERNAME",
+        "password": "YOUR_PASSWORD",
+        "auth": "mojang"
+    },
+    "autoEat": {
+        "enabled": true,
+        "bannedFood": [],
+        "hungerThreshold": 18
+    },
+    "autoReconnect": {
+        "enabled": true,
+        "triggerPlayers": ["YOUR_USERNAME"],
+        "triggerKeywords": ["asdfwef"],
+        "rejoinDelay": 1800000,
+        "retryDelayMs": 5000,
+        "maxRetryCount": 2
+    },
+    "behavior": {
+        "autoCommands": ["/afk"]
+    }
+}

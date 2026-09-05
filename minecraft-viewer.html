@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Minecraft 方块查看器 · 1.20.1 光影修复演示</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0d1117; color: #e6edf3; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  #app { position: fixed; inset: 0; }
+  #hud { position: absolute; top: 12px; left: 12px; z-index: 10; background: rgba(13,17,23,.85); border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; max-width: 320px; pointer-events: none; }
+  #hud h1 { font-size: 15px; margin-bottom: 4px; }
+  #hud p { font-size: 12px; color: #8b949e; line-height: 1.5; }
+  #hud .badge { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb55; }
+  #controls { position: absolute; top: 12px; right: 12px; z-index: 10; display: flex; flex-direction: column; gap: 6px; }
+  #controls button { padding: 6px 12px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: #e6edf3; font-size: 12px; cursor: pointer; text-align: left; transition: background .15s; }
+  #controls button:hover { background: #30363d; }
+  #controls button.active { border-color: #1f6feb; background: #1f6feb33; color: #58a6ff; }
+  #tooltip { position: absolute; z-index: 20; display: none; background: rgba(0,0,0,.85); border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-size: 12px; pointer-events: none; white-space: nowrap; }
+  #status { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 10; font-size: 12px; color: #8b949e; background: rgba(13,17,23,.7); padding: 6px 14px; border-radius: 20px; border: 1px solid #30363d; }
+  #notice { position: absolute; inset: 0; z-index: 30; display: none; align-items: center; justify-content: center; background: rgba(13,17,23,.92); flex-direction: column; gap: 12px; text-align: center; }
+  #notice .box { max-width: 480px; padding: 24px; border: 1px solid #30363d; border-radius: 10px; }
+  #notice code { background: #21262d; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud">
+    <h1>Minecraft 1.20.1 方块查看器</h1>
+    <p>已修复 <code>includes('air')</code> 误伤楼梯等方块的 bug，并移植 prismarine-viewer 渲染管线（AO 光影 / cullface / UV 旋转 / tint）。</p>
+    <span class="badge">数据: viewer-assets/blocksStates/1.20.1.json · 2048 图集</span>
+  </div>
+
+  <div id="controls">
+    <button id="btn-ao" class="active">AO 光影: 开</button>
+    <button id="btn-bug">修复前对比 (includes bug)</button>
+    <button id="btn-mode">模式: 精选 20</button>
+    <button id="btn-rebuild">重建全部</button>
+    <button id="btn-reset">重置视角</button>
+  </div>
+
+  <div id="tooltip"></div>
+  <div id="status">加载中…</div>
+
+  <div id="notice"><div class="box" id="notice-box"></div></div>
+
+  <script src="node_modules/three/build/three.min.js"></script>
+  <script src="node_modules/three/examples/js/controls/OrbitControls.js"></script>
+
+  <script>
+'use strict'
+/* ============================================================
+ * 独立 HTML 方块查看器 —— 移植自 prismarine-viewer viewer/lib/models.js
+ * 关键修复：getModelVariants 中 `name.includes('air')` 会误伤
+ * oak_stairs / stone_stairs 等（子串 "air"），改为精确匹配 Set。
+ * ============================================================ */
+
+// ---------- 1. 常量与数据 ----------
+const ATLAS_SIZE = 2048 // viewer-assets 图集尺寸（补丁数据 UV 基于 2048）
+const AIR_BLOCK_NAMES = new Set(['air', 'cave_air', 'void_air'])
+
+// biome 固定用 plains（演示 tint 效果）
+const BIOME = 'plains'
+
+// tints 数据（来自 minecraft-data 1.16.2，硬编码演示所需部分）
+const TINTS = {
+  grass: [0.847, 0.847, 0.741], // plains
+  foliage: [0.588, 0.773, 0.184], // plains
+  water: [0.4, 0.588, 0.824], // default
+  redstone: [
+    [0.188, 0.188, 0.188], [0.278, 0.278, 0.278], [0.302, 0.302, 0.302],
+    [0.325, 0.325, 0.325], [0.35, 0.35, 0.35], [0.376, 0.376, 0.376],
+    [0.403, 0.403, 0.403], [0.427, 0.427, 0.427], [0.452, 0.452, 0.452],
+    [0.478, 0.478, 0.478], [0.502, 0.502, 0.502], [0.527, 0.527, 0.527],
+    [0.553, 0.553, 0.553], [0.577, 0.577, 0.577], [0.604, 0.604, 0.604],
+    [0.631, 0.631, 0.631]
+  ],
+  constant: { birch_leaves: [0.329, 0.745, 0.325], spruce_leaves: [0.251, 0.49, 0.176], lily_pad: [0.082, 0.447, 0.208] }
+}
+
+// ---------- 2. 简单 3D 矩阵工具（与 models.js 一致） ----------
+function vecadd3 (a, b) { return b ? [a[0] + b[0], a[1] + b[1], a[2] + b[2]] : a }
+function vecsub3 (a, b) { return b ? [a[0] - b[0], a[1] - b[1], a[2] - b[2]] : a }
+function matmul3 (matrix, vector) {
+  if (!matrix) return vector
+  return [
+    matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
+    matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
+    matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2]
+  ]
+}
+function matmulmat3 (a, b) {
+  const te = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+  const a11 = a[0][0], a12 = a[1][0], a13 = a[2][0]
+  const a21 = a[0][1], a22 = a[1][1], a23 = a[2][1]
+  const a31 = a[0][2], a32 = a[1][2], a33 = a[2][2]
+  const b11 = b[0][0], b12 = b[1][0], b13 = b[2][0]
+  const b21 = b[0][1], b22 = b[1][1], b23 = b[2][1]
+  const b31 = b[0][2], b32 = b[1][2], b33 = b[2][2]
+  te[0][0] = a11 * b11 + a12 * b21 + a13 * b31
+  te[1][0] = a11 * b12 + a12 * b22 + a13 * b32
+  te[2][0] = a11 * b13 + a12 * b23 + a13 * b33
+  te[0][1] = a21 * b11 + a22 * b21 + a23 * b31
+  te[1][1] = a21 * b12 + a22 * b22 + a23 * b32
+  te[2][1] = a21 * b13 + a22 * b23 + a23 * b33
+  te[0][2] = a31 * b11 + a32 * b21 + a33 * b31
+  te[1][2] = a31 * b12 + a32 * b22 + a33 * b32
+  te[2][2] = a31 * b13 + a32 * b23 + a33 * b33
+  return te
+}
+function buildRotationMatrix (axis, degree) {
+  const radians = degree / 180 * Math.PI
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  const axis0 = { x: 0, y: 1, z: 2 }[axis]
+  const axis1 = (axis0 + 1) % 3
+  const axis2 = (axis0 + 2) % 3
+  const matrix = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+  matrix[axis0][axis0] = 1
+  matrix[axis1][axis1] = cos
+  matrix[axis1][axis2] = -sin
+  matrix[axis2][axis1] = +sin
+  matrix[axis2][axis2] = cos
+  return matrix
+}
+
+// ---------- 3. elemFaces 表（与 models.js 一致） ----------
+const elemFaces = {
+  up: { dir: [0, 1, 0], mask1: [1, 1, 0], mask2: [0, 1, 1], corners: [[0, 1, 1, 0, 1], [1, 1, 1, 1, 1], [0, 1, 0, 0, 0], [1, 1, 0, 1, 0]] },
+  down: { dir: [0, -1, 0], mask1: [1, 1, 0], mask2: [0, 1, 1], corners: [[1, 0, 1, 0, 1], [0, 0, 1, 1, 1], [1, 0, 0, 0, 0], [0, 0, 0, 1, 0]] },
+  east: { dir: [1, 0, 0], mask1: [1, 1, 0], mask2: [1, 0, 1], corners: [[1, 1, 1, 0, 0], [1, 0, 1, 0, 1], [1, 1, 0, 1, 0], [1, 0, 0, 1, 1]] },
+  west: { dir: [-1, 0, 0], mask1: [1, 1, 0], mask2: [1, 0, 1], corners: [[0, 1, 0, 0, 0], [0, 0, 0, 0, 1], [0, 1, 1, 1, 0], [0, 0, 1, 1, 1]] },
+  north: { dir: [0, 0, -1], mask1: [1, 0, 1], mask2: [0, 1, 1], corners: [[1, 0, 0, 0, 1], [0, 0, 0, 1, 1], [1, 1, 0, 0, 0], [0, 1, 0, 1, 0]] },
+  south: { dir: [0, 0, 1], mask1: [1, 0, 1], mask2: [0, 1, 1], corners: [[0, 0, 1, 0, 1], [1, 0, 1, 1, 1], [0, 1, 1, 0, 0], [1, 1, 1, 1, 0]] }
+}
+
+// ---------- 4. 方块属性匹配（与 models.js 一致） ----------
+function parseProperties (properties) {
+  if (typeof properties === 'object') return properties
+  const json = {}
+  for (const prop of properties.split(',')) {
+    const [key, value] = prop.split('=')
+    json[key] = value
+  }
+  return json
+}
+function matchProperties (block, properties) {
+  if (!properties) return true
+  properties = parseProperties(properties)
+  const blockProps = block.props
+  if (properties.OR) return properties.OR.some((or) => matchProperties(block, or))
+  for (const prop in blockProps) {
+    if (typeof properties[prop] === 'string' && !properties[prop].split('|').some((value) => value === blockProps[prop] + '')) return false
+  }
+  return true
+}
+
+// ---------- 5. 模型变体选择（★修复点★） ----------
+function getModelVariants (block, blockStates) {
+  // 原代码: if (block.name.includes('air')) return []
+  // bug: "oak_stairs" 含子串 "air"，导致所有楼梯不渲染。
+  // 修复: 精确匹配 Set
+  if (AIR_BLOCK_NAMES.has(block.name)) return []
+  const state = blockStates[block.name] ?? blockStates.missing_texture
+  if (!state) return []
+  if (state.variants) {
+    for (const [properties, variant] of Object.entries(state.variants)) {
+      if (!matchProperties(block, properties)) continue
+      if (variant instanceof Array) return [variant[0]]
+      return [variant]
+    }
+  }
+  if (state.multipart) {
+    const parts = state.multipart.filter((multipart) => matchProperties(block, multipart.when))
+    let variants = []
+    for (const part of parts) {
+      if (part.apply instanceof Array) variants = [...variants, ...part.apply]
+      else variants = [...variants, part.apply]
+    }
+    return variants
+  }
+  return []
+}
+
+// ---------- 6. 面渲染（与 models.js renderElement 一致） ----------
+// world.getBlock 返回 { name, isCube, transparent, props, y } 或 undefined
+function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block) {
+  const cullIfIdentical = block.name.indexOf('glass') >= 0
+
+  for (const face in element.faces) {
+    const eFace = element.faces[face]
+    const { corners, mask1, mask2 } = elemFaces[face]
+    const dir = matmul3(globalMatrix, elemFaces[face].dir)
+
+    if (eFace.cullface) {
+      const neighbor = world.getBlock(cursor.x + dir[0], cursor.y + dir[1], cursor.z + dir[2])
+      if (!neighbor) continue
+      if (cullIfIdentical && neighbor.name === block.name) continue
+      if (!neighbor.transparent && neighbor.isCube) continue
+      if (neighbor.y < 0) continue
+    }
+
+    const minx = element.from[0], miny = element.from[1], minz = element.from[2]
+    const maxx = element.to[0], maxy = element.to[1], maxz = element.to[2]
+
+    const u = eFace.texture.u
+    const v = eFace.texture.v
+    const su = eFace.texture.su
+    const sv = eFace.texture.sv
+
+    const ndx = Math.floor(attr.positions.length / 3)
+
+    let tint = [1, 1, 1]
+    if (eFace.tintindex !== undefined && eFace.tintindex === 0) {
+      if (block.name === 'redstone_wire') tint = TINTS.redstone[block.props.power | 0] || TINTS.redstone[0]
+      else if (block.name === 'birch_leaves' || block.name === 'spruce_leaves' || block.name === 'lily_pad') tint = TINTS.constant[block.name]
+      else if (block.name.includes('leaves') || block.name === 'vine') tint = TINTS.foliage
+      else tint = TINTS.grass
+    }
+
+    // UV rotation
+    const r = eFace.rotation || 0
+    const uvcs = Math.cos(r * Math.PI / 180)
+    const uvsn = -Math.sin(r * Math.PI / 180)
+
+    let localMatrix = null
+    let localShift = null
+    if (element.rotation) {
+      localMatrix = buildRotationMatrix(element.rotation.axis, element.rotation.angle)
+      localShift = vecsub3(element.rotation.origin, matmul3(localMatrix, element.rotation.origin))
+    }
+
+    const aos = []
+    for (const pos of corners) {
+      let vertex = [
+        (pos[0] ? maxx : minx),
+        (pos[1] ? maxy : miny),
+        (pos[2] ? maxz : minz)
+      ]
+      vertex = vecadd3(matmul3(localMatrix, vertex), localShift)
+      vertex = vecadd3(matmul3(globalMatrix, vertex), globalShift)
+      vertex = vertex.map(val => val / 16)
+
+      attr.positions.push(
+        vertex[0] + (cursor.x & 15) - 8,
+        vertex[1] + (cursor.y & 15) - 8,
+        vertex[2] + (cursor.z & 15) - 8
+      )
+      attr.normals.push(...dir)
+
+      const baseu = (pos[3] - 0.5) * uvcs - (pos[4] - 0.5) * uvsn + 0.5
+      const basev = (pos[3] - 0.5) * uvsn + (pos[4] - 0.5) * uvcs + 0.5
+      attr.uvs.push(baseu * su + u, basev * sv + v)
+
+      let light = 1
+      if (doAO) {
+        const dx = pos[0] * 2 - 1
+        const dy = pos[1] * 2 - 1
+        const dz = pos[2] * 2 - 1
+        const cornerDir = matmul3(globalMatrix, [dx, dy, dz])
+        const side1Dir = matmul3(globalMatrix, [dx * mask1[0], dy * mask1[1], dz * mask1[2]])
+        const side2Dir = matmul3(globalMatrix, [dx * mask2[0], dy * mask2[1], dz * mask2[2]])
+        const side1 = world.getBlock(cursor.x + side1Dir[0], cursor.y + side1Dir[1], cursor.z + side1Dir[2])
+        const side2 = world.getBlock(cursor.x + side2Dir[0], cursor.y + side2Dir[1], cursor.z + side2Dir[2])
+        const corner = world.getBlock(cursor.x + cornerDir[0], cursor.y + cornerDir[1], cursor.z + cornerDir[2])
+
+        const side1Block = (side1 && side1.isCube) ? 1 : 0
+        const side2Block = (side2 && side2.isCube) ? 1 : 0
+        const cornerBlock = (corner && corner.isCube) ? 1 : 0
+
+        const ao = (side1Block && side2Block) ? 0 : (3 - (side1Block + side2Block + cornerBlock))
+        light = (ao + 1) / 4
+        aos.push(ao)
+      }
+
+      attr.colors.push(tint[0] * light, tint[1] * light, tint[2] * light)
+    }
+
+    if (doAO && aos[0] + aos[3] >= aos[1] + aos[2]) {
+      attr.indices.push(ndx, ndx + 3, ndx + 2, ndx, ndx + 1, ndx + 3)
+    } else {
+      attr.indices.push(ndx, ndx + 1, ndx + 2, ndx + 2, ndx + 1, ndx + 3)
+    }
+  }
+}
+
+// ---------- 7. 世界模拟（供 cullface / AO 查询邻居） ----------
+class DemoWorld {
+  constructor () {
+    this.map = new Map() // key "x,y,z" -> block descriptor
+  }
+  key (x, y, z) { return x + ',' + y + ',' + z }
+  set (x, y, z, block) { this.map.set(this.key(x, y, z), block) }
+  // 旋转矩阵会引入 6.12e-17 级浮点误差，取整保证邻居查询准确
+  getBlock (x, y, z) { return this.map.get(this.key(Math.round(x), Math.round(y), Math.round(z))) }
+}
+
+// 构造一个 "展示底座 + 空气占位" 的世界：
+//   - y<=0 全部铺石头（isCube, 不透明）→ 底面 cullface 生效、AO 有邻居
+//   - y>=1 全部铺空气（transparent, 非 cube）→ 外露面正常渲染
+//   - 展示方块随后覆盖到 y=1 的具体位置
+function makeShowcaseWorld (groundName = 'stone') {
+  const world = new DemoWorld()
+  const ground = { name: groundName, isCube: true, transparent: false, props: {}, y: 0 }
+  const air = { name: 'air', isCube: false, transparent: true, props: {}, y: 1 }
+  for (let x = -20; x <= 20; x++) {
+    for (let y = 0; y <= 3; y++) {
+      for (let z = -30; z <= 10; z++) {
+        world.set(x, y, z, y === 0 ? ground : air)
+      }
+    }
+  }
+  return world
+}
+
+// 简化的方块描述：{ name, isCube, transparent, props }
+const CUBE_NAMES = new Set([
+  'stone', 'dirt', 'grass_block', 'cobblestone', 'oak_planks', 'sand', 'gravel',
+  'iron_block', 'gold_block', 'diamond_block', 'netherite_block', 'bricks', 'stone_bricks',
+  'mossy_cobblestone', 'obsidian', 'bedrock', 'coal_ore', 'iron_ore', 'gold_ore',
+  'diamond_ore', 'redstone_ore', 'emerald_ore', 'lapis_ore', 'quartz_block', 'glowstone',
+  'sea_lantern', 'bookshelf', 'crafting_table', 'furnace', 'pumpkin', 'melon', 'hay_block',
+  'bone_block', 'coal_block', 'redstone_block', 'emerald_block', 'lapis_block', 'clay',
+  'white_wool', 'orange_wool', 'magenta_wool', 'light_blue_wool', 'yellow_wool', 'lime_wool',
+  'pink_wool', 'gray_wool', 'light_gray_wool', 'cyan_wool', 'purple_wool', 'blue_wool',
+  'brown_wool', 'green_wool', 'red_wool', 'black_wool', 'terracotta', 'white_terracotta',
+  'orange_terracotta', 'magenta_terracotta', 'light_blue_terracotta', 'yellow_terracotta',
+  'lime_terracotta', 'pink_terracotta', 'gray_terracotta', 'light_gray_terracotta',
+  'cyan_terracotta', 'purple_terracotta', 'blue_terracotta', 'brown_terracotta',
+  'green_terracotta', 'red_terracotta', 'black_terracotta', 'packed_ice', 'snow_block',
+  'netherrack', 'soul_sand', 'nether_bricks', 'end_stone', 'purpur_block', 'prismarine',
+  'dark_prismarine', 'prismarine_bricks', 'polished_andesite', 'polished_diorite',
+  'polished_granite', 'andesite', 'diorite', 'granite', 'sandstone', 'red_sandstone',
+  'smooth_stone', 'crying_obsidian', 'blackstone', 'basalt', 'deepslate', 'cobbled_deepslate',
+  'tuff', 'calcite', 'dripstone_block', 'mud', 'mud_bricks', 'mangrove_planks', 'ochre_froglight',
+  'verdant_froglight', 'pearlescent_froglight', 'sculk', 'sculk_sensor', 'reinforced_deepslate',
+  'cracked_deepslate_bricks', 'deepslate_bricks', 'polished_deepslate', 'chiseled_deepslate',
+  'raw_iron_block', 'raw_copper_block', 'raw_gold_block', 'amethyst_block', 'budding_amethyst',
+  'smooth_basalt', 'polished_basalt', 'polished_blackstone', 'polished_blackstone_bricks'
+])
+const NONCUBE_NAMES = new Set([
+  'oak_stairs', 'spruce_stairs', 'birch_stairs', 'jungle_stairs', 'acacia_stairs',
+  'dark_oak_stairs', 'mangrove_stairs', 'crimson_stairs', 'warped_stairs', 'stone_stairs',
+  'cobblestone_stairs', 'sandstone_stairs', 'red_sandstone_stairs', 'nether_brick_stairs',
+  'quartz_stairs', 'prismarine_stairs', 'brick_stairs', 'stone_brick_stairs', 'purpur_stairs',
+  'granite_stairs', 'polished_granite_stairs', 'diorite_stairs', 'polished_diorite_stairs',
+  'andesite_stairs', 'polished_andesite_stairs', 'deepslate_brick_stairs', 'deepslate_tile_stairs',
+  'cobbled_deepslate_stairs', 'polished_deepslate_stairs', 'blackstone_stairs', 'polished_blackstone_stairs',
+  'polished_blackstone_brick_stairs', 'mud_brick_stairs', 'mangrove_stairs_dup', 'mossy_cobblestone_stairs',
+  'mossy_stone_brick_stairs', 'red_nether_brick_stairs', 'end_stone_brick_stairs',
+  'oak_slab', 'spruce_slab', 'birch_slab', 'jungle_slab', 'acacia_slab', 'dark_oak_slab',
+  'mangrove_slab', 'crimson_slab', 'warped_slab', 'stone_slab', 'cobblestone_slab',
+  'sandstone_slab', 'red_sandstone_slab', 'quartz_slab', 'brick_slab', 'stone_brick_slab',
+  'purpur_slab', 'granite_slab', 'diorite_slab', 'andesite_slab', 'deepslate_brick_slab',
+  'deepslate_tile_slab', 'cobbled_deepslate_slab', 'polished_deepslate_slab',
+  'oak_fence', 'oak_fence_gate', 'spruce_fence', 'birch_fence', 'jungle_fence', 'acacia_fence',
+  'dark_oak_fence', 'mangrove_fence', 'nether_brick_fence', 'cobblestone_wall', 'mossy_cobblestone_wall',
+  'oak_door', 'iron_door', 'oak_trapdoor', 'iron_trapdoor', 'spruce_trapdoor', 'birch_trapdoor',
+  'jungle_trapdoor', 'acacia_trapdoor', 'dark_oak_trapdoor', 'mangrove_trapdoor',
+  'oak_button', 'stone_button', 'oak_pressure_plate', 'stone_pressure_plate', 'light_weighted_pressure_plate',
+  'heavy_weighted_pressure_plate', 'lever', 'ladder', 'rail', 'powered_rail', 'detector_rail',
+  'activator_rail', 'torch', 'wall_torch', 'redstone_torch', 'redstone_wire', 'repeater',
+  'comparator', 'observer', 'piston', 'sticky_piston', 'piston_head', 'dispenser', 'dropper',
+  'hopper', 'anvil', 'chipped_anvil', 'damaged_anvil', 'grindstone', 'stonecutter', 'bell',
+  'lantern', 'soul_lantern', 'campfire', 'soul_campfire', 'chain', 'iron_bars', 'glass_pane',
+  'stained_glass_pane', 'white_stained_glass_pane', 'orange_stained_glass_pane',
+  'magenta_stained_glass_pane', 'light_blue_stained_glass_pane', 'yellow_stained_glass_pane',
+  'lime_stained_glass_pane', 'pink_stained_glass_pane', 'gray_stained_glass_pane',
+  'light_gray_stained_glass_pane', 'cyan_stained_glass_pane', 'purple_stained_glass_pane',
+  'blue_stained_glass_pane', 'brown_stained_glass_pane', 'green_stained_glass_pane',
+  'red_stained_glass_pane', 'black_stained_glass_pane', 'vine', 'lily_pad', 'flower_pot',
+  'potted_oak_sapling', 'cactus', 'sugar_cane', 'bamboo', 'chorus_plant', 'chorus_flower',
+  'end_rod', 'cocoa', 'carrots', 'potatoes', 'wheat', 'beetroots', 'sweet_berry_bush',
+  'nether_wart', 'brown_mushroom_block', 'red_mushroom_block', 'mushroom_stem', 'scaffolding',
+  'honey_block', 'slime_block', 'tnt', 'note_block', 'jukebox', 'chest', 'trapped_chest',
+  'ender_chest', 'barrel', 'blast_furnace', 'smoker', 'brewing_stand', 'cauldron', 'water_cauldron',
+  'lava_cauldron', 'conduit', 'beacon', 'shulker_box', 'white_shulker_box', 'banner', 'standing_banner',
+  'wall_banner', 'oak_sign', 'spruce_sign', 'birch_sign', 'jungle_sign', 'acacia_sign',
+  'dark_oak_sign', 'mangrove_sign', 'crimson_sign', 'warped_sign', 'oak_wall_sign', 'iron_bars_dup',
+  'oak_leaves', 'spruce_leaves', 'birch_leaves', 'jungle_leaves', 'acacia_leaves', 'dark_oak_leaves',
+  'mangrove_leaves', 'azalea_leaves', 'flowering_azalea_leaves', 'glass', 'white_stained_glass',
+  'orange_stained_glass', 'magenta_stained_glass', 'light_blue_stained_glass', 'yellow_stained_glass',
+  'lime_stained_glass', 'pink_stained_glass', 'gray_stained_glass', 'light_gray_stained_glass',
+  'cyan_stained_glass', 'purple_stained_glass', 'blue_stained_glass', 'brown_stained_glass',
+  'green_stained_glass', 'red_stained_glass', 'black_stained_glass', 'spawner', 'dragon_egg',
+  'enchanting_table', 'ender_chest_dup', 'red_mushroom', 'brown_mushroom', 'dandelion', 'poppy',
+  'blue_orchid', 'allium', 'azure_bluet', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip',
+  'oxeye_daisy', 'cornflower', 'lily_of_the_valley', 'wither_rose', 'sunflower', 'lilac',
+  'rose_bush', 'peony', 'grass', 'fern', 'large_fern', 'tall_grass', 'dead_bush', 'seagrass',
+  'tall_seagrass', 'kelp', 'kelp_plant', 'dried_kelp_block', 'sea_pickle', 'sea_lantern_dup',
+  'turtle_egg', 'sniffer_egg', 'frogspawn', 'bubble_column', 'water', 'lava', 'soul_soil',
+  'nether_gold_ore', 'crimson_nylium', 'warped_nylium', 'warped_fungus', 'crimson_fungus',
+  'warped_roots', 'crimson_roots', 'weeping_vines', 'twisting_vines', 'nether_sprouts', 'nether_portal',
+  'end_portal_frame', 'end_gateway', 'glow_lichen', 'moss_carpet', 'moss_block', 'pointed_dripstone',
+  'small_amethyst_bud', 'medium_amethyst_bud', 'large_amethyst_bud', 'amethyst_cluster', 'lightning_rod',
+  'target', 'lodestone', 'respawn_anchor', 'shroomlight', 'warped_stem', 'crimson_stem',
+  'warped_hyphae', 'crimson_hyphae', 'stripped_warped_stem', 'stripped_crimson_stem',
+  'stripped_warped_hyphae', 'stripped_crimson_hyphae', 'warped_wart_block', 'crimson_fungus_dup',
+  'polished_blackstone_button', 'polished_blackstone_pressure_plate', 'polished_blackstone_wall',
+  'chiseled_nether_bricks', 'cracked_nether_bricks', 'quartz_pillar', 'chiseled_quartz_block',
+  'quartz_bricks', 'smooth_quartz', 'cut_sandstone', 'chiseled_sandstone', 'smooth_sandstone',
+  'cut_red_sandstone', 'chiseled_red_sandstone', 'smooth_red_sandstone', 'purpur_pillar',
+  'chiseled_stone_bricks', 'cracked_stone_bricks', 'infested_stone_bricks', 'infested_cobblestone',
+  'infested_stone', 'infested_mossy_stone_bricks', 'infested_cracked_stone_bricks', 'infested_chiseled_stone_bricks',
+  'infested_deepslate', 'mossy_stone_bricks', 'cracked_deepslate_bricks_dup', 'chiseled_polished_blackstone',
+  'gilded_blackstone', 'cracked_polished_blackstone_bricks', 'chiseled_bookshelf', 'decorated_pot',
+  'suspicious_sand', 'suspicious_gravel', 'ochre_froglight_dup'
+])
+function isCubeLike (name) {
+  return CUBE_NAMES.has(name)
+}
+
+// 选取一个默认属性组合（取 variants 第一个非空 key 的属性）
+function pickVariantBlock (blockName, blocksStates) {
+  const state = blocksStates[blockName] || blocksStates.missing_texture
+  const props = {}
+  if (state && state.variants) {
+    const keys = Object.keys(state.variants)
+    const first = keys.find(k => k !== '') || keys[0] || ''
+    if (first) {
+      for (const kv of first.split(',')) {
+        const [k, v] = kv.split('=')
+        if (k && v !== undefined) props[k] = v
+      }
+    }
+  }
+  return props
+}
+
+// 为单个方块构建几何（返回 { positions, normals, colors, uvs, indices } 或 null）
+function buildGeometryForBlock (blockName, x, y, z, blocksStates, world, doAO, useBugAir) {
+  const block = {
+    name: blockName,
+    props: pickVariantBlock(blockName, blocksStates),
+    isCube: isCubeLike(blockName),
+    transparent: blockName.includes('glass') || blockName.includes('leaves') || blockName.includes('stained_glass') || blockName.includes('ice') || blockName === 'water' || blockName === 'lava'
+  }
+  if (blockName === 'redstone_wire') block.props.power = '15'
+  if (blockName === 'water' || blockName === 'lava') return null // 液体由 viewer 特殊处理，本演示跳过
+
+  // ★ 修复前/后对比：useBugAir 模拟旧代码 includes('air')
+  if (useBugAir) {
+    if (blockName.includes('air')) return null
+  } else {
+    if (AIR_BLOCK_NAMES.has(blockName)) return null
+  }
+
+  const variant = getModelVariants(block, blocksStates)
+  if (!variant || variant.length === 0) return null
+
+  const attr = { positions: [], normals: [], colors: [], uvs: [], indices: [] }
+  let built = false
+  for (const v of variant) {
+    if (!v || !v.model) continue
+    let globalMatrix = null
+    let globalShift = null
+    for (const axis of ['x', 'y', 'z']) {
+      if (axis in v) {
+        if (!globalMatrix) globalMatrix = buildRotationMatrix(axis, -v[axis])
+        else globalMatrix = matmulmat3(globalMatrix, buildRotationMatrix(axis, -v[axis]))
+      }
+    }
+    if (globalMatrix) {
+      globalShift = [8, 8, 8]
+      globalShift = vecsub3(globalShift, matmul3(globalMatrix, globalShift))
+    }
+    for (const element of v.model.elements) {
+      renderElement(world, { x, y, z }, element, v.model.ao && doAO, attr, globalMatrix, globalShift, block)
+      built = true
+    }
+  }
+  if (!built || attr.positions.length === 0) return null
+  return attr
+}
+
+// 展示区块布局：精选方块（含修复前 bug 对比列）
+const FEATURED_BLOCKS = [
+  'oak_stairs', 'stone_stairs', 'spruce_stairs', 'cobblestone_stairs', 'nether_brick_stairs', 'quartz_stairs', 'purpur_stairs', 'brick_stairs',
+  'anvil', 'chipped_anvil', 'damaged_anvil', 'grindstone', 'stonecutter', 'bell', 'lantern', 'soul_lantern',
+  'furnace', 'blast_furnace', 'smoker', 'dispenser', 'dropper', 'hopper', 'chest', 'barrel',
+  'oak_slab', 'oak_fence', 'oak_fence_gate', 'oak_door', 'oak_trapdoor', 'oak_button', 'lever', 'ladder',
+  'rail', 'torch', 'redstone_wire', 'repeater', 'comparator', 'observer', 'piston', 'sticky_piston',
+  'oak_leaves', 'spruce_leaves', 'birch_leaves', 'vine', 'lily_pad', 'grass', 'tall_grass', 'flower_pot',
+  'glass', 'glass_pane', 'iron_bars', 'chain', 'redstone_torch', 'wall_torch', 'campfire', 'end_rod',
+  'water_cauldron', 'cauldron', 'flowering_azalea_leaves', 'azalea_leaves', 'mangrove_leaves', 'dark_oak_leaves',
+  'cactus', 'sugar_cane', 'bamboo', 'chorus_plant', 'chorus_flower', 'scaffolding', 'honey_block', 'slime_block'
+]
+
+// 可选：全部方块（从 blocksStates 取出，剔除特殊）
+function allBlockNames (blocksStates) {
+  return Object.keys(blocksStates).filter(n =>
+    !AIR_BLOCK_NAMES.has(n) && n !== 'missing_texture' && n !== 'water' && n !== 'lava'
+  )
+}
+
+// 把一批方块摆进展示世界并生成 mesh 数据
+function renderAllBlocks (names, blocksStates, world, doAO, useBugAir, scene, offsetX = 0) {
+  const group = new THREE.Group()
+  const cols = 10
+  const spacing = 1.6
+  const originX = offsetX - ((names.length - 1) / cols) * spacing / 2
+  const meshes = []
+  let count = 0
+
+  names.forEach((name, i) => {
+    const gx = i % cols
+    const gz = Math.floor(i / cols)
+    const wx = Math.round(originX + gx * spacing)
+    const wz = Math.round(-gz * spacing)
+    const attr = buildGeometryForBlock(name, wx, 1, wz, blocksStates, world, doAO, useBugAir)
+    if (!attr) return
+    count++
+
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(attr.positions, 3))
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(attr.normals, 3))
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(attr.colors, 3))
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(attr.uvs, 2))
+    geo.setIndex(attr.indices)
+    geo.computeBoundingSphere()
+
+    const mat = new THREE.MeshBasicMaterial({
+      map: atlasTexture,
+      vertexColors: true,
+      transparent: block.transparent || name.includes('water') || name.includes('lava'),
+      alphaTest: 0.1,
+      side: THREE.FrontSide
+    })
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.userData = { blockName: name, x: wx, y: 1, z: wz }
+    group.add(mesh)
+    meshes.push(mesh)
+
+    // 每个方块放一个隐藏占位 box 用于 raycast 精确命中
+    const hitBox = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ visible: false }))
+    hitBox.position.set(wx, 1, wz)
+    hitBox.userData = { blockName: name, x: wx, y: 1, z: wz }
+    group.add(hitBox)
+  })
+
+  scene.add(group)
+  return { group, meshes, count }
+}
+
+// ---------- 8. three.js 场景 ----------
+let atlasTexture = null
+let blocksStatesData = null
+let mainGroup = null
+let raycaster, pointer, renderer, scene, camera, controls
+
+function initThree () {
+  const app = document.getElementById('app')
+  renderer = new THREE.WebGLRenderer({ antialias: false })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  renderer.setSize(window.innerWidth, window.innerHeight)
+  renderer.setClearColor(0x0d1117)
+  app.appendChild(renderer.domElement)
+
+  scene = new THREE.Scene()
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000)
+  camera.position.set(0, 14, 22)
+
+  controls = new THREE.OrbitControls(camera, renderer.domElement)
+  controls.target.set(0, 2, -4)
+  controls.enableDamping = true
+  controls.dampingFactor = 0.08
+  controls.maxPolarAngle = Math.PI * 0.48
+
+  // 环境光辅助（无光照，使用顶点色，仅为视觉辅助）
+  const ambient = new THREE.AmbientLight(0xffffff, 1)
+  scene.add(ambient)
+
+  // 地面网格参考线
+  const grid = new THREE.GridHelper(40, 20, 0x30363d, 0x21262d)
+  grid.position.y = 0.01
+  scene.add(grid)
+
+  raycaster = new THREE.Raycaster()
+  pointer = new THREE.Vector2()
+
+  renderer.domElement.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('resize', onResize)
+}
+
+function onResize () {
+  camera.aspect = window.innerWidth / window.innerHeight
+  camera.updateProjectionMatrix()
+  renderer.setSize(window.innerWidth, window.innerHeight)
+}
+
+// ---------- 9. 数据加载 ----------
+async function loadData () {
+  const [statesRes, tex] = await Promise.all([
+    fetch('viewer-assets/blocksStates/1.20.1.json').then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      return r.json()
+    }),
+    new Promise((resolve, reject) => {
+      const img = new Image()
+      img.onload = () => resolve(img)
+      img.onerror = () => reject(new Error('无法加载图集 viewer-assets/textures/1.20.1.png'))
+      img.src = 'viewer-assets/textures/1.20.1.png'
+    })
+  ])
+  blocksStatesData = statesRes
+  atlasTexture = new THREE.Texture(tex)
+  atlasTexture.magFilter = THREE.NearestFilter
+  atlasTexture.minFilter = THREE.LinearFilter
+  atlasTexture.colorSpace = THREE.SRGBColorSpace
+  atlasTexture.needsUpdate = true
+}
+
+// ---------- 10. 构建与重建 ----------
+function rebuild (mode = 'featured', doAO = true, useBugAir = false) {
+  if (mainGroup) { scene.remove(mainGroup); mainGroup.traverse(o => { if (o.geometry) o.geometry.dispose() }); mainGroup = null }
+
+  const world = makeShowcaseWorld()
+  const names = mode === 'all' ? allBlockNames(blocksStatesData) : FEATURED_BLOCKS
+  const t0 = performance.now()
+  const res = renderAllBlocks(names, blocksStatesData, world, doAO, useBugAir, scene, 0)
+  mainGroup = res.group
+  const dt = ((performance.now() - t0) / 1000).toFixed(2)
+
+  const bugLabel = useBugAir ? '（模拟修复前 bug：楼梯等被误伤）' : ''
+  document.getElementById('status').textContent = `已渲染 ${res.count}/${names.length} 个方块 · ${dt}s ${bugLabel}`
+  document.getElementById('btn-bug').classList.toggle('active', useBugAir)
+}
+
+// ---------- 11. 交互：悬停提示 ----------
+function onPointerMove (e) {
+  const rect = renderer.domElement.getBoundingClientRect()
+  pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+  pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+
+  raycaster.setFromCamera(pointer, camera)
+  const tooltip = document.getElementById('tooltip')
+  if (!mainGroup) { tooltip.style.display = 'none'; return }
+
+  const hits = raycaster.intersectObjects(mainGroup.children, false)
+  if (hits.length > 0 && hits[0].object.userData.blockName) {
+    const { blockName, x, y, z } = hits[0].object.userData
+    tooltip.style.display = 'block'
+    tooltip.textContent = `${blockName}  (${x}, ${y}, ${z})`
+    tooltip.style.left = (e.clientX + 14) + 'px'
+    tooltip.style.top = (e.clientY + 14) + 'px'
+    renderer.domElement.style.cursor = 'pointer'
+  } else {
+    tooltip.style.display = 'none'
+    renderer.domElement.style.cursor = 'default'
+  }
+}
+
+// ---------- 12. 按钮绑定 ----------
+let currentMode = 'featured'
+let aoOn = true
+let bugOn = false
+
+function bindButtons () {
+  document.getElementById('btn-ao').addEventListener('click', () => {
+    aoOn = !aoOn
+    document.getElementById('btn-ao').textContent = `AO 光影: ${aoOn ? '开' : '关'}`
+    document.getElementById('btn-ao').classList.toggle('active', aoOn)
+    rebuild(currentMode, aoOn, bugOn)
+  })
+  document.getElementById('btn-bug').addEventListener('click', () => {
+    bugOn = !bugOn
+    rebuild(currentMode, aoOn, bugOn)
+  })
+  document.getElementById('btn-mode').addEventListener('click', () => {
+    currentMode = currentMode === 'featured' ? 'all' : 'featured'
+    document.getElementById('btn-mode').textContent = `模式: ${currentMode === 'featured' ? '精选 66' : '全部 ' + allBlockNames(blocksStatesData).length}`
+    rebuild(currentMode, aoOn, bugOn)
+  })
+  document.getElementById('btn-rebuild').addEventListener('click', () => rebuild(currentMode, aoOn, bugOn))
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    camera.position.set(0, 14, 22)
+    controls.target.set(0, 2, -4)
+    controls.update()
+  })
+}
+
+// ---------- 13. 主循环 ----------
+function animate () {
+  requestAnimationFrame(animate)
+  controls.update()
+  renderer.render(scene, camera)
+}
+
+// ---------- 14. 启动 ----------
+async function boot () {
+  const status = document.getElementById('status')
+  try {
+    status.textContent = '加载数据中…'
+    await loadData()
+    initThree()
+    bindButtons()
+    rebuild(currentMode, aoOn, bugOn)
+    animate()
+    status.textContent = '就绪 — 拖动旋转 / 滚轮缩放 / 悬停查看方块名'
+  } catch (err) {
+    const box = document.getElementById('notice-box')
+    box.innerHTML = `<h3>数据加载失败</h3><p>${err.message}</p><br><p>本查看器需要从本地目录读取 12.7MB 的 blocksStates 数据，<b>请用本地 HTTP 服务器打开</b>：</p><br><code>cd ${window.location.pathname.split('/').slice(0, -1).join('/') || '.'}</code><br><code>python3 -m http.server 8080</code><br><br><p>然后访问 <code>http://localhost:8080/minecraft-viewer.html</code></p>`
+    document.getElementById('notice').style.display = 'flex'
+    status.textContent = '加载失败'
+  }
+}
+
+if (window.THREE && window.THREE.OrbitControls) {
+  boot()
+} else {
+  document.getElementById('notice-box').innerHTML = '<h3>three.js 未加载</h3><p>请通过本地服务器打开本文件（见控制台提示），确保 node_modules 存在。</p>'
+  document.getElementById('notice').style.display = 'flex'
+}
+</script>
+</body>
+</html>

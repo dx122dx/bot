@@ -1,0 +1,33 @@
+{
+  "name": "mineflayer",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc && node -e \"require('node:fs').copyFileSync('src/viewer-patch.cjs','dist/src/viewer-patch.cjs')\"",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "verify:viewer": "node verification/verify-viewer-assets.cjs"
+  },
+  "keywords": [],
+  "type": "module",
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "axios": "^1.19.0",
+    "canvas": "^3.2.3",
+    "mineflayer": "^4.37.1",
+    "mineflayer-auto-eat": "^5.0.3",
+    "mineflayer-pathfinder": "^2.4.5",
+    "pngjs": "^7.0.0",
+    "prismarine-viewer": "^1.33.0",
+    "xstate": "^5.32.5"
+  },
+  "allowScripts": {
+    "canvas@3.2.3": true
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/pngjs": "^6.0.5",
+    "typescript": "^7.0.2"
+  }
+}

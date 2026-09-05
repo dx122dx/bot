@@ -1,0 +1,22 @@
+# Development
+.codebuddy/
+export.sh
+mineflayer-export**
+local/
+task.md
+
+# Node js
+node_modules/
+
+# Distribution
+dist/
+viewer-assets/blocksStates/
+viewer-assets/textures/
+
+# Legacy
+legacy/
+
+# Runtime data
+*.log
+config*json
+!config.example.json
