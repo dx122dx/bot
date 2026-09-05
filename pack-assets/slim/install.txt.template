@@ -1,0 +1,23 @@
+mineflayer 精简分发包 v{{VERSION}}
+构建时间: {{BUILT_AT}}
+构建标签: {{TAG}}
+
+内容：
+  dist/                       已编译产物（npm run build 的输出）
+  package.json                依赖清单
+  package-lock.json           锁定版本
+  config.example.json         配置模板
+  viewer-assets/texture-src/  纹理源（118 个 PNG）
+
+使用：
+  1) npm ci --omit=dev                     # 需要网络
+  2) cp config.example.json config.json    # 填写账号密码等配置
+  3) npm start
+
+说明：
+  - 无需再执行 npm run build，dist/ 已就位。
+  - canvas 是可装依赖（optionalDependencies），只有 !view 可视化用到：
+    装不上只会被跳过，不影响机器人其余功能；若 !view 提示缺少 canvas，执行：
+      npm i canvas
+  - viewer-assets/blocksStates 与 viewer-assets/textures 是生成产物，不随包分发，
+    首次启动时由 dist/src/viewer-patch.cjs 从 texture-src 自动重建。

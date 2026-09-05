@@ -44,13 +44,12 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: 打包
-        run: |
-          if [ "${{ inputs.include_full_package }}" = "true" ]; then
-            ./pack.sh "${{ steps.meta.outputs.tag }}"
-          else
-            ./pack.sh "${{ steps.meta.outputs.tag }}" --skip-full
-          fi
+      - name: 打包精简包
+        run: ./pack.sh "${{ steps.meta.outputs.tag }}" -m slim
+
+      - name: 打包自包含包
+        if: ${{ inputs.include_full_package }}
+        run: ./pack.sh "${{ steps.meta.outputs.tag }}" -m full
 
       - name: 列出产物
         run: ls -lh build/

@@ -1,0 +1,22 @@
+mineflayer 自包含分发包 v{{VERSION}}
+构建时间: {{BUILT_AT}}
+构建标签: {{TAG}}
+
+内容：
+  精简包的全部内容 + node_modules（已 npm prune --omit=dev，不含 devDependencies）
+  注意：已排除可装依赖 canvas，因此本包为纯 JS 依赖树，不绑定操作系统与 Node ABI。
+
+运行环境：
+  - 任意装了 Node.js 的平台（linux / macOS / Windows 均可），建议 Node 18+（本项目在 Node 26 上构建）
+  - 无需 npm install、无需 npm run build
+
+使用：
+  1) cp config.example.json config.json    # 填写账号密码等配置
+  2) npm start
+
+说明：
+  - 本包不含 canvas，因此 !view 可视化不可用（控制台会给出提示，机器人其余功能不受影响）。
+    若需要可视化，在本目录执行（需网络与对应平台的编译/预编译支持）：
+      npm install canvas
+  - viewer-assets/blocksStates 与 viewer-assets/textures 是生成产物，不随包分发，
+    首次启动时由 dist/src/viewer-patch.cjs 从 texture-src 自动重建。
