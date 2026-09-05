@@ -8,8 +8,11 @@
 //   - stateId → (name,props) 用 /api/blocksStateMeta 解码；isCube/transparent 直接来自
 //     meta 里的方块级 t/c 字段（服务端用 minecraft-data blocksByName + blockCollisionShapes
 //     计算，等价 prismarine-viewer world.js 的 isCube 判定）。
-//   - 列未加载返回 null（渲染核心会保留该面）；列已加载但某 section 全 air（header 省略）
-//     视为全 0（air 描述）。空 header（count=0）表示服务器确认"列已载入但全空"。
+//   - 列未加载返回 null → 渲染核心 geometry.js 对 null 邻居执行 continue，即「剔除该面」
+//     （与上游 prismarine-viewer models.js 行为一致：未加载列与已加载列交界处、以及视口
+//     最外圈的外向面不会被渲染）。注意：这与"保留该面"相反，勿按旧注释推导。
+//     列已加载但某 section 全 air（header 省略）视为全 0（air 描述）。
+//     空 header（count=0）表示服务器确认"列已载入但全空"。
 //
 // 本文件零浏览器 API 依赖，Node 断言亦可 import（用于链路回归）。
 'use strict'
@@ -154,8 +157,13 @@ export class MirrorWorld {
     const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
     if (!b || b.length < 6) return false
     if (b[0] !== 0x4c || b[1] !== 0x56) return false
+    const version = b[2]
     const minY = (b[3] | (b[4] << 8)) << 16 >> 16 // int16LE
     const count = b[5]
+    // 版本 + 长度强校验：不符即视为"未就绪"返回 false，由 worker 记入 emptyCols 重试。
+    // 否则半包（gzip 分块/代理截断等）会被静默接受：该列只剩前几个 section 显示半边地形，
+    // 且因"已加载"永不自愈。
+    if (version !== 1 || b.length !== 6 + count * (1 + SECTION_VOLUME * 2)) return false
     let col = this.getColumn(cx, cz)
     if (!col) {
       col = new MirrorColumn(cx, cz, minY)
@@ -166,7 +174,7 @@ export class MirrorWorld {
     }
     col.loaded = true
     let off = 6
-    for (let k = 0; k < count && off + 1 + SECTION_VOLUME * 2 <= b.length; k++) {
+    for (let k = 0; k < count; k++) {
       const si = b[off++]
       const section = new MirrorSection(si, minY + si * 16)
       // 偏移可能非 2 对齐（6 + k*(1+8192) 奇数），不能直接用 Uint16Array 子视图；逐字节组装
@@ -248,16 +256,14 @@ export class MirrorWorld {
     return [...this.columns.keys()]
   }
 
-  /** 统计：已加载列数 / 已建 section 数 / 总非空格数（估算，供 HUD 数字缓动） */
+  /** 统计：已加载列数 / 已建 section 数。
+   * 性能约定：stats 每 50ms 被 mesh-worker 调用一次，禁止逐格扫描——满视距下
+   * 169 列 × 12 section × 4096 格实测约 14ms/次，会吃掉 ~28% Worker 线程时间，
+   * cells 结果此前也无任何消费方。若日后需要非空格数，请在写入路径增量维护。
+   */
   stats () {
     let sections = 0
-    let cells = 0
-    for (const col of this.columns.values()) {
-      for (const s of col.sections.values()) {
-        sections++
-        for (let i = 0; i < SECTION_VOLUME; i++) if (s.data[i] !== 0) cells++
-      }
-    }
-    return { columns: this.columns.size, sections, cells }
+    for (const col of this.columns.values()) sections += col.sections.size
+    return { columns: this.columns.size, sections }
   }
 }

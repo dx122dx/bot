@@ -192,8 +192,6 @@ function suiteInvariants (suite) {
       const attr = buildFixture(fx)
       if (!attr) { problems.push(`${name}: 构建失败/无几何`); continue }
       const pv = pixVerts(attr, fx)
-      let worst = 0
-      for (const p of pv) for (const c of p) worst = Math.max(worst, Math.abs(c) > 16 ? Math.max(p[0], p[1], p[2]) - 16 : 0)
       const bad = pv.filter((p) => p.some((c) => c < -PIX_TOL || c > 16 + PIX_TOL))
       if (bad.length) {
         problems.push(`${name}: ${bad.length}/${pv.length} 顶点出界，例 [${bad[0].map((v) => v.toFixed(4)).join(', ')}]`)

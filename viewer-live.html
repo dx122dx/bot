@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Minecraft 1.20.1 实时查看器</title>
+<link rel="icon" href="data:,">
 <style>
   :root {
     --bg: #0d1117;
@@ -125,9 +126,19 @@
 
 <div id="notice"><div class="box" id="notice-box"></div></div>
 
-<script src="node_modules/three/build/three.min.js"></script>
-<script src="node_modules/three/examples/js/controls/OrbitControls.js"></script>
+<!-- three ≥ r152（本仓直接依赖；prismarine-viewer 依赖锁 0.128 走自身嵌套）。
+     r148 起 examples/js UMD 版被移除，r152 默认 sRGB 颜色管理（texture.colorSpace 生效），
+     必须用 ESM 导入。OrbitControls 内部以裸名 'three' 引用，因此需 importmap 先映射。 -->
+<script type="importmap">
+{ "imports": { "three": "./node_modules/three/build/three.module.js", "three/addons/": "./node_modules/three/examples/jsm/" } }
+</script>
 <script type="module">
+import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+// 注意：import * as THREE 的命名空间对象是只读的（module namespace），不能挂属性
+//（THREE.OrbitControls = X 会抛 TypeError）。因此控件用上面的具名导入；window.THREE
+// 只是把引用交给 Console/boot 使用，也不要再往其上赋值。
+window.THREE = THREE
 'use strict'
 
 // ============ 工具 ============
@@ -143,7 +154,7 @@ let workerReady = false
 // ============ three 场景 ============
 let renderer, scene, camera, controls, raycaster, pointer
 let hoverLine = null
-const meshes = new Map() // key "cx,cz/si" → THREE.Mesh
+const meshes = new Map() // key "cx,cz/si" → { parts:[opaqueMesh|null,alphaMesh|null] }
 const fetchInFlight = new Set()
 const fetchQueue = []
 const netCnt = { ok: 0, empty: 0, err: 0 }
@@ -160,11 +171,13 @@ function initThree () {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.setSize(window.innerWidth, window.innerHeight)
   renderer.setClearColor(0x0d1117)
+  // r152 起默认即 sRGB 输出，此处显式声明，避免依赖隐式默认值
+  renderer.outputColorSpace = THREE.SRGBColorSpace
   app.appendChild(renderer.domElement)
 
   scene = new THREE.Scene()
   camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 4000)
-  controls = new THREE.OrbitControls(camera, renderer.domElement)
+  controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
   controls.dampingFactor = 0.08
   controls.maxPolarAngle = Math.PI * 0.55
@@ -208,55 +221,79 @@ function loadAtlasTexture () {
 // ============ 几何 Mesh 管理 ============
 const BASE_MAT_OPTS = { vertexColors: true, side: THREE.DoubleSide, alphaTest: 0.35 }
 
-function addGeometry ({ key, origin, positions, normals, colors, uvs, indices }) {
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
-  geo.setIndex(new THREE.BufferAttribute(indices, 1))
-
-  // 网格定位：渲染核心的局部坐标 = 世界坐标 − 8（(x&15)−8 范围 [-8,7]），mesh 放在 section 原点 + 8
+function addGeometry ({ key, origin, positions, normals, colors, uvs, opaqueIdx, alphaIdx }) {
   const existing = meshes.get(key)
-  const mat = new THREE.MeshBasicMaterial(Object.assign({ map: firstTexture, transparent: true, opacity: 0 }, BASE_MAT_OPTS))
-  let mesh
-  if (existing) {
-    mesh = existing
-    mesh.geometry.dispose()
-    mesh.geometry = geo
-    mesh.material.dispose()
-    mesh.material = mat
-  } else {
-    mesh = new THREE.Mesh(geo, mat)
-    mesh.name = key
-    scene.add(mesh)
-    meshes.set(key, mesh)
-  }
-  mesh.position.set(origin.x + 8, origin.y + 8, origin.z + 8)
+  if (existing) for (const m of existing.parts) if (m) removeMeshObject(m)
 
-  // 0.18s 淡入：仅对首次出现的 section 执行。dirty 重建直接以最终透明度呈现，
-  // 避免高频更新把 opacity 反复重置为 0、导致画面长期近乎全透明。
-  if (existing) {
-    mesh.material.opacity = 1
-    return
+  // section 几何拆成两个 Mesh：不透明部分 + alpha 半透明部分（染色玻璃/冰等）。
+  // three 恒先渲染全部不透明对象、再按深度渲染透明对象；若玻璃面与实心面塞进同一个
+  // transparent mesh，mesh 内三角形不做片元级排序——玻璃先画并写 depth，石块面后画被
+  // depth test 丢弃 → 透过玻璃看到实心方块"消失"（透视回归的根因）。拆分后石块在
+  // 不透明 pass 画全、玻璃在透明 pass 后混合，顺序天然正确。
+  const fade = !existing
+  const parts = []
+  const specs = [
+    { idx: opaqueIdx, persistTransparent: false },
+    { idx: alphaIdx, persistTransparent: true }
+  ]
+  for (const spec of specs) {
+    if (!spec.idx || spec.idx.length === 0) { parts.push(null); continue }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+    geo.setIndex(new THREE.BufferAttribute(spec.idx, 1))
+    // 淡入只在 transparent 通道进行：新建走 0→1 渐显；dirty 重建直接终态（防高频置 0）
+    const mat = new THREE.MeshBasicMaterial(Object.assign({
+      map: firstTexture,
+      transparent: fade || spec.persistTransparent,
+      opacity: fade ? 0 : 1
+    }, BASE_MAT_OPTS))
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.name = key
+    // 渲染核心局部坐标 = 世界 − 8（(x&15)−8 范围 [-8,7]），mesh 放在 section 原点 + 8
+    mesh.position.set(origin.x + 8, origin.y + 8, origin.z + 8)
+    scene.add(mesh)
+    if (fade) fadeIn(mesh, spec.persistTransparent)
+    parts.push(mesh)
   }
+  meshes.set(key, { parts, origin })
+}
+
+function fadeIn (mesh, persistTransparent) {
   const t0 = performance.now()
-  const fade = () => {
+  const step = () => {
     const p = clamp((performance.now() - t0) / 180, 0, 1)
-    const e = 1 - Math.pow(1 - p, 2)
-    mesh.material.opacity = e
-    if (p < 1) requestAnimationFrame(fade)
+    mesh.material.opacity = 1 - Math.pow(1 - p, 2)
+    if (p < 1) requestAnimationFrame(step)
+    else {
+      // 不透明部分淡入后离开透明渲染通道；alpha 部分保持常驻（r152+ 需 needsUpdate 生效）
+      mesh.material.transparent = persistTransparent
+      mesh.material.needsUpdate = true
+    }
   }
-  fade()
+  step()
+}
+
+function removeMeshObject (m) {
+  scene.remove(m)
+  m.geometry.dispose()
+  m.material.dispose()
 }
 
 function removeGeometry (key) {
-  const mesh = meshes.get(key)
-  if (!mesh) return
+  const entry = meshes.get(key)
+  if (!entry) return
   meshes.delete(key)
-  scene.remove(mesh)
-  mesh.geometry.dispose()
-  mesh.material.dispose()
+  for (const m of entry.parts) if (m) removeMeshObject(m)
+}
+
+/** 供 raycast 的可渲染 mesh 列表（不透明 + alpha 两半） */
+function renderMeshes () {
+  const out = []
+  for (const e of meshes.values()) for (const m of e.parts) if (m) out.push(m)
+  return out
 }
 
 // ============ Worker 协议 ============
@@ -340,8 +377,18 @@ async function pumpFetch () {
       bumpNet()
       if (netCnt.err <= 8) console.warn(`[live] /chunk ${job.cx},${job.cz} 拉取失败:`, err)
       setStatus(`区块拉取异常 ×${netCnt.err}`, 'warn')
-      // 网络抖动：延迟后重试一次
-      setTimeout(() => { fetchQueue.push(job); pumpFetch() }, 400)
+      // 有限重试（≤3 次，退避 400/800ms）：失败后推回队尾。耗尽后发 chunk-failed，
+      // Worker 会记入 emptyCols 由 4s 兜底周期重新发起请求自愈——否则出错列将
+      // 无限期卡在"已请求"状态（不再被请求、也不重建），形成稳定的地形空洞。
+      const attempt = (job.attempt || 0) + 1
+      if (attempt < 3) {
+        setTimeout(() => {
+          fetchQueue.push({ key: job.key, cx: job.cx, cz: job.cz, attempt })
+          pumpFetch()
+        }, 400 * attempt)
+      } else {
+        worker.postMessage({ type: 'chunk-failed', cx: job.cx, cz: job.cz })
+      }
     } finally {
       fetchInFlight.delete(job.key)
     }
@@ -430,7 +477,7 @@ function onPointerMove (e) {
   pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
   raycaster.setFromCamera(pointer, camera)
 
-  const hits = raycaster.intersectObjects([...meshes.values()], false)
+  const hits = raycaster.intersectObjects(renderMeshes(), false)
   if (!hits.length) {
     if (lastHoverCell !== null) { lastHoverCell = null; hideHover() }
     renderer.domElement.style.cursor = hoverCursor = 'default'
@@ -480,18 +527,18 @@ function onBlockInfo (d) {
   tip.style.top = Math.min(eventY + 14, window.innerHeight - 60) + 'px'
 }
 let eventX = 0; let eventY = 0
-renderer = null
 
-// ============ HUD 更新（数字缓动）============
-const counters = { sec: 0, dirty: 0 }
+// ============ HUD 更新 ============
+// dirty 由 Worker 每 ~50ms 上报：只在数值实际变化时写 DOM，
+// 避免动画帧内反复写同一个字符串（无变化也触发布局/样式计算）。
 const elSec = $('st-sec'); const elDirty = $('st-dirty')
+let lastDirtyDisp = -1
 function onWorkerStats (s) {
-  counters.dirty = s.dirty
   elSec.textContent = meshes.size
-}
-function tickStatus () {
-  // 简单缓动到目标（每秒 ~30 次）
-  elDirty.textContent = counters.dirty
+  if (s.dirty !== lastDirtyDisp) {
+    lastDirtyDisp = s.dirty
+    elDirty.textContent = s.dirty
+  }
 }
 
 // ============ 视角 ============
@@ -557,16 +604,12 @@ function animate () {
   } else {
     prevFollowTarget = null
   }
-  tickStatus()
   renderer.render(scene, camera)
 }
 
 // ============ 启动 ============
 async function boot () {
-  if (!(window.THREE && window.THREE.OrbitControls)) {
-    showFatal('three.js 未加载——请通过 !liveview 启动的本地服务器访问本页')
-    return
-  }
+  // module 顶层 import 成功即保证 THREE 可用；能执行到这里说明加载正常
   initThree()
   let initInfo
   try {

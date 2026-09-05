@@ -180,7 +180,11 @@ export function buildBlockGeometry (block, x, y, z, blocksStates, world, { doAO 
  * @returns {GeometryAttr|null}
  */
 export function buildSectionGeometry (origin, world, blocksStates, { doAO = true, biome = DEFAULT_BIOME } = {}) {
-  const attr = { positions: [], normals: [], colors: [], uvs: [], indices: [] }
+  // indices 保持全量（供 verts/tris 统计与既有消费方）；opaqueIndices/alphaIndices 按方块
+  // 是否半透明（block.transparent）把三角分装——页面据此拆"不透明 mesh / alpha 混合 mesh"，
+  // 避免单 mesh 内透明与不透明面混排：不透明面与玻璃面同一渲染队列时不做片元级排序，
+  // 玻璃先画会以 depth 遮挡其后绘制的实心面（透过玻璃"消失/透视"）。
+  const attr = { positions: [], normals: [], colors: [], uvs: [], indices: [], opaqueIndices: [], alphaIndices: [] }
   let any = false
   for (let by = 0; by < 16; by++) {
     for (let bz = 0; bz < 16; bz++) {
@@ -193,6 +197,10 @@ export function buildSectionGeometry (origin, world, blocksStates, { doAO = true
         if (!block) continue
         const built = buildBlockGeometry(block, x, y, z, blocksStates, world, { doAO, biome })
         if (built) {
+          // 索引偏移 = 本块首顶点在累计缓冲里的位置（appendGeometry 只平移索引）
+          const base = attr.positions.length / 3
+          const partition = block.transparent ? attr.alphaIndices : attr.opaqueIndices
+          for (let i = 0; i < built.indices.length; i++) partition.push(built.indices[i] + base)
           appendGeometry(attr, built)
           any = true
         }

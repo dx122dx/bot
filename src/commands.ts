@@ -332,9 +332,20 @@ export function handleLocalCommand(input: string): void {
             const sub = (parts[1] || '').toLowerCase();
             if (sub === 'enable') {
                 const p = parseInt(parts[2], 10);
-                enableLiveView(bot!, Number.isInteger(p) && p > 0 && p < 65536 ? p : 3001);
+                // 守卫：机器人本体未就绪（未连接 / 未入服）时不带 null 进入启动逻辑，
+                // 交由 enableLiveView 内部状态判断；不直接断言 bot! 以免运行期 TypeError。
+                if (!bot || !bot.entity || !bot.world) {
+                    console.log(`${ts()}⚠️ 机器人未进入服务器，无法启动实时查看器（请先 !connect 且已在游戏内）`);
+                    break;
+                }
+                const port = Number.isInteger(p) && p > 0 && p < 65536 ? p : 3001;
+                enableLiveView(bot, port).catch((err: unknown) => {
+                    console.error(`${ts()}❌ 启动实时查看器异常: ${err instanceof Error ? err.message : String(err)}`);
+                });
             } else if (sub === 'disable') {
-                disableLiveView();
+                disableLiveView().catch((err: unknown) => {
+                    console.error(`${ts()}❌ 关闭实时查看器异常: ${err instanceof Error ? err.message : String(err)}`);
+                });
             } else {
                 console.log(`${ts()}⚠️ 用法错误: !liveview enable [端口] 或 !liveview disable`);
                 console.log(`${ts()}ℹ️ 示例: !liveview enable 3001 / !liveview disable`);

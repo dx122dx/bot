@@ -19,7 +19,8 @@
 //     {type:'ready'}
 //     {type:'need-column', cx,cz}          —— 主线程 fetch /chunk 后回传 chunk/chunk-empty
 //     {type:'remove-column', cx,cz}        —— 主线程卸载对应 Mesh 与几何
-//     {type:'geometry', key, origin, positions,normals,colors,uvs,indices}  (transfer 前四个 buffer)
+//     {type:'geometry', key, origin, positions,normals,colors,uvs,opaqueIdx,alphaIdx}  (全部 transfer)
+//        opaqueIdx/alphaIdx：渲染核心把三角按"方块是否半透明"分装成两组，页面据此拆两个 mesh
 //     {type:'gone', key}                   —— 该 section 现无几何（清空/全空），主线程移除 Mesh
 //     {type:'blockinfo', id, name, x,y,z}  —— 悬停查询应答
 //     {type:'stats', dirty, columns, sections}
@@ -150,10 +151,13 @@ function flushDirty () {
       const normals = new Float32Array(attr.normals)
       const colors = new Float32Array(attr.colors)
       const uvs = new Float32Array(attr.uvs)
-      const indices = new Uint32Array(attr.indices)
+      // 渲染核心已按方块是否半透明把三角分装；页面据此拆"不透明/alpha 混合"两个 mesh。
+      // 空数组也随消息传递（纯不透明 section 的 alphaIdx 为空），页面据此只建需要的部分。
+      const opaqueIdx = new Uint32Array(attr.opaqueIndices || [])
+      const alphaIdx = new Uint32Array(attr.alphaIndices || [])
       geoKeys.set(key, true)
-      post('geometry', { key, origin: item.origin, positions, normals, colors, uvs, indices },
-        [positions.buffer, normals.buffer, colors.buffer, uvs.buffer, indices.buffer])
+      post('geometry', { key, origin: item.origin, positions, normals, colors, uvs, opaqueIdx, alphaIdx },
+        [positions.buffer, normals.buffer, colors.buffer, uvs.buffer, opaqueIdx.buffer, alphaIdx.buffer])
     } else if (geoKeys.has(key)) {
       geoKeys.delete(key)
       post('gone', { key })
@@ -196,6 +200,12 @@ self.onmessage = ({ data }) => {
     if (ok) markColumnDirty(data.cx, data.cz, oldSi)
     else emptyCols.add(key) // 空体：列尚未就绪
   } else if (t === 'chunk-empty') {
+    const key = keyC(data.cx, data.cz)
+    requested.delete(key)
+    emptyCols.add(key)
+  } else if (t === 'chunk-failed') {
+    // 主线程对 /chunk 的有限次重试已耗尽：清 requested 并记入 emptyCols，
+    // 交给 4s 定时兜底重试自愈——否则该列卡在 requested 里永不再次请求。
     const key = keyC(data.cx, data.cz)
     requested.delete(key)
     emptyCols.add(key)

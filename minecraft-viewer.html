@@ -45,8 +45,10 @@
 
   <div id="notice"><div class="box" id="notice-box"></div></div>
 
-  <script src="node_modules/three/build/three.min.js"></script>
-  <script src="node_modules/three/examples/js/controls/OrbitControls.js"></script>
+  <!-- 老演示页：three 引用锁定 prismarine-viewer 嵌套的 0.128（其 examples/js UMD 仍存在），
+       不随本仓顶层 three(≥r152) 升级——本页是"老缺陷"对比参照，须保持 0.128 语义不变。 -->
+  <script src="node_modules/prismarine-viewer/node_modules/three/build/three.min.js"></script>
+  <script src="node_modules/prismarine-viewer/node_modules/three/examples/js/controls/OrbitControls.js"></script>
 
   <script>
 'use strict'
