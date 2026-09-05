@@ -33,7 +33,9 @@ export async function showView(port = 3000): Promise<void> {
         const viewerModule = 'prismarine-viewer';
         mineflayerViewer = require(viewerModule).mineflayer;
     } catch (err) {
-        console.log(`${ts()}⚠️ 当前构建未包含 prismarine-viewer 依赖，!view 可视化不可用`);
+        console.log(`${ts()}⚠️ 无法加载 prismarine-viewer，!view 可视化不可用: ${(err as Error).message}`);
+        console.log(`${ts()}ℹ️ 若提示缺少 canvas（可装依赖，仅可视化用到），在本目录执行后重试: npm i canvas`);
+        console.log(`${ts()}ℹ️ 装不上 canvas 不影响机器人其余功能；自包含分发包默认不含 canvas`);
         return;
     }
     if (bot.viewer && bot.viewer._viewerPort) {

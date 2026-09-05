@@ -1,0 +1,73 @@
+name: Build dist packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_full_package:
+        description: '是否同时产出自包含包（含 node_modules，文件体积大且压缩耗时长）'
+        type: boolean
+        required: false
+        default: false
+      tag:
+        description: '产物名后缀（留空则自动使用 run 号 + commit 短 sha）'
+        type: string
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+
+      - name: 安装依赖（含 devDependencies，构建需要 typescript）
+        run: npm ci
+
+      - name: 构建 dist
+        run: npm run build
+
+      - name: 移除 devDependencies
+        run: npm prune --omit=dev
+
+      - name: 计算产物名后缀
+        id: meta
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="run${{ github.run_number }}-$(printf '%s' '${{ github.sha }}' | cut -c1-7)"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 打包
+        run: |
+          if [ "${{ inputs.include_full_package }}" = "true" ]; then
+            ./pack.sh "${{ steps.meta.outputs.tag }}"
+          else
+            ./pack.sh "${{ steps.meta.outputs.tag }}" --skip-full
+          fi
+
+      - name: 列出产物
+        run: ls -lh build/
+
+      - name: 上传精简包
+        uses: actions/upload-artifact@v4
+        with:
+          name: mineflayer-dist-${{ steps.meta.outputs.tag }}
+          path: build/mineflayer-dist-${{ steps.meta.outputs.tag }}.zip
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: 上传自包含包
+        if: ${{ inputs.include_full_package }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mineflayer-dist-${{ steps.meta.outputs.tag }}-with-deps
+          path: build/mineflayer-dist-${{ steps.meta.outputs.tag }}-with-deps.zip
+          if-no-files-found: error
+          compression-level: 0

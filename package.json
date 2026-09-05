@@ -14,13 +14,15 @@
   "dependencies": {
     "adm-zip": "^0.6.0",
     "axios": "^1.19.0",
-    "canvas": "^3.2.3",
     "mineflayer": "^4.37.1",
     "mineflayer-auto-eat": "^5.0.3",
     "mineflayer-pathfinder": "^2.4.5",
     "pngjs": "^7.0.0",
     "prismarine-viewer": "^1.33.0",
     "xstate": "^5.32.5"
+  },
+  "optionalDependencies": {
+    "canvas": "^3.2.3"
   },
   "allowScripts": {
     "canvas@3.2.3": true

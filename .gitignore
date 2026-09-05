@@ -10,6 +10,7 @@ node_modules/
 
 # Distribution
 dist/
+build/
 viewer-assets/blocksStates/
 viewer-assets/textures/
 
