@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minecraft 1.20.1 实时查看器</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: rgba(22, 27, 34, 0.72);
+    --panel-solid: #161b22;
+    --line: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #1f6feb;
+    --accent-2: #58a6ff;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --font: "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font); }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  .hud {
+    position: fixed; top: 14px; left: 14px; z-index: 10;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 8px 24px rgba(0,0,0,.35); user-select: none; pointer-events: none;
+    max-width: min(340px, calc(100vw - 130px));
+  }
+  .hud h1 { font-size: 15px; font-weight: 600; letter-spacing: .3px; display: flex; align-items: center; gap: 8px; }
+  .hud h1 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .hud h1 .dot.busy { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .hud h1 .dot.err { background: var(--err); box-shadow: 0 0 8px var(--err); }
+  .hud .sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; line-height: 1.5; }
+  .hud .badges { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .badge {
+    font-family: var(--mono); font-size: 11px; color: var(--accent-2);
+    border: 1px solid rgba(88,166,255,.35); background: rgba(31,111,235,.12);
+    padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  }
+  .badge.dim { color: var(--text-dim); border-color: var(--line); background: transparent; }
+
+  #controls {
+    position: fixed; top: 14px; right: 14px; z-index: 10; display: flex; gap: 8px;
+    flex-wrap: wrap; justify-content: flex-end;
+  }
+  #controls button {
+    font: 500 12px var(--font); color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; cursor: pointer;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: background .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease;
+  }
+  #controls button:hover { border-color: var(--accent-2); color: #fff; }
+  #controls button.active { border-color: var(--accent-2); color: var(--accent-2); background: rgba(31,111,235,.18); box-shadow: 0 0 0 1px var(--accent) inset; }
+
+  #statusbar {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 10;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+    padding: 7px 18px; font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+    display: flex; align-items: center; gap: 14px; white-space: nowrap;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 8px 24px rgba(0,0,0,.35); transition: border-color .3s ease;
+  }
+  #statusbar.warn { border-color: var(--warn); color: var(--warn); }
+  #statusbar.err { border-color: var(--err); color: var(--err); }
+  #statusbar b { color: var(--text); font-weight: 600; }
+  #statusbar .sep { opacity: .35; }
+
+  #tooltip {
+    position: fixed; z-index: 20; display: none; pointer-events: none;
+    background: var(--panel-solid); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 10px; font-family: var(--mono); font-size: 12px; color: var(--text);
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  }
+  #tooltip .pos { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+
+  #notice {
+    position: fixed; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center;
+    background: rgba(13,17,23,.82); backdrop-filter: blur(4px);
+  }
+  #notice .box {
+    background: var(--panel-solid); border: 1px solid var(--line); border-radius: 14px;
+    max-width: 480px; padding: 26px 30px; color: var(--text); box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  }
+  #notice h3 { color: var(--err); font-size: 16px; margin-bottom: 12px; }
+  #notice p { font-size: 13px; line-height: 1.8; color: var(--text-dim); }
+  #notice code { font-family: var(--mono); background: rgba(88,166,255,.08); color: var(--accent-2); padding: 1px 6px; border-radius: 5px; word-break: break-all; }
+
+  @media (max-width: 720px) {
+    .hud { top: 10px; left: 10px; padding: 8px 10px; max-width: calc(100vw - 200px); }
+    #controls { top: auto; bottom: 62px; right: 10px; left: 10px; justify-content: center; }
+    #controls button { padding: 6px 9px; font-size: 11px; }
+    #statusbar { font-size: 10px; padding: 6px 12px; gap: 8px; max-width: 96vw; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div class="hud" id="hud">
+  <h1><span class="dot" id="dot"></span>Minecraft 1.20.1 实时查看器</h1>
+  <div class="sub">自研渲染核心 · viewer-assets 2048 图集 · Worker 建网格 · SSE 实时区块流</div>
+  <div class="badges">
+    <span class="badge">核心 v1</span>
+    <span class="badge" id="badge-mode">biome: plains</span>
+    <span class="badge dim" id="badge-stream">stream: —</span>
+  </div>
+</div>
+
+<div id="controls">
+  <button id="btn-ao" class="active">AO 光影: 开</button>
+  <button id="btn-follow" class="active">跟随 bot: 开</button>
+  <button id="btn-reset">重置视角</button>
+  <button id="btn-rebuild">重建全部</button>
+</div>
+
+<div id="statusbar"><span id="st-status">连接中…</span><span class="sep">|</span><span>section <b id="st-sec">0</b></span><span class="sep">|</span><span>dirty <b id="st-dirty">0</b></span><span class="sep">|</span><span>同步 <b id="st-sync">—</b>ms</span><span class="sep">|</span><span>chunk 载<b id="st-fetched">0</b>·空<b id="st-empty">0</b>·错<b id="st-err">0</b></span><span class="sep">|</span><span>bot <b id="st-pos">—</b></span></div>
+
+<div id="tooltip"><span id="tt-name"></span><div class="pos" id="tt-pos"></div></div>
+
+<div id="notice"><div class="box" id="notice-box"></div></div>
+
+<script src="node_modules/three/build/three.min.js"></script>
+<script src="node_modules/three/examples/js/controls/OrbitControls.js"></script>
+<script type="module">
+'use strict'
+
+// ============ 工具 ============
+const $ = (id) => document.getElementById(id)
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+
+const CORE_VERSION = 'core-v1'
+const VIEW_MARGIN_CHUNK = 1 // 缓存保留一圈裕量
+let viewDistance = 6
+let worker = null
+let workerReady = false
+
+// ============ three 场景 ============
+let renderer, scene, camera, controls, raycaster, pointer
+let hoverLine = null
+const meshes = new Map() // key "cx,cz/si" → THREE.Mesh
+const fetchInFlight = new Set()
+const fetchQueue = []
+const netCnt = { ok: 0, empty: 0, err: 0 }
+function bumpNet () {
+  $('st-fetched').textContent = netCnt.ok
+  $('st-empty').textContent = netCnt.empty
+  $('st-err').textContent = netCnt.err
+}
+let firstTexture = null
+
+function initThree () {
+  const app = $('app')
+  renderer = new THREE.WebGLRenderer({ antialias: false })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  renderer.setSize(window.innerWidth, window.innerHeight)
+  renderer.setClearColor(0x0d1117)
+  app.appendChild(renderer.domElement)
+
+  scene = new THREE.Scene()
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 4000)
+  controls = new THREE.OrbitControls(camera, renderer.domElement)
+  controls.enableDamping = true
+  controls.dampingFactor = 0.08
+  controls.maxPolarAngle = Math.PI * 0.55
+  controls.minDistance = 1
+  controls.maxDistance = 400
+
+  raycaster = new THREE.Raycaster()
+  pointer = new THREE.Vector2()
+
+  renderer.domElement.addEventListener('pointermove', onPointerMove)
+  window.addEventListener('resize', onResize)
+}
+
+function onResize () {
+  camera.aspect = window.innerWidth / window.innerHeight
+  camera.updateProjectionMatrix()
+  renderer.setSize(window.innerWidth, window.innerHeight)
+}
+
+// ============ 纹理 ============
+function loadAtlasTexture () {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const tex = new THREE.Texture(img)
+      tex.magFilter = THREE.NearestFilter
+      tex.minFilter = THREE.LinearFilter
+      tex.colorSpace = THREE.SRGBColorSpace
+      // 关键：图集内容在 PNG 顶部 512 行，blocksStates 的 u/v 以"顶部"为 v 原点；
+      // three 默认 flipY=true 会把图像倒置上传（v=0 采到图像底部空白区）→ 全黑。
+      // 必须 flipY=false 使 UV 的 v 与 PNG 顶部内容区同向。
+      tex.flipY = false
+      tex.needsUpdate = true
+      resolve(tex)
+    }
+    img.onerror = () => reject(new Error('无法加载图集 /viewer-assets/textures/1.20.1.png'))
+    img.src = 'viewer-assets/textures/1.20.1.png'
+  })
+}
+
+// ============ 几何 Mesh 管理 ============
+const BASE_MAT_OPTS = { vertexColors: true, side: THREE.DoubleSide, alphaTest: 0.35 }
+
+function addGeometry ({ key, origin, positions, normals, colors, uvs, indices }) {
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+  geo.setIndex(new THREE.BufferAttribute(indices, 1))
+
+  // 网格定位：渲染核心的局部坐标 = 世界坐标 − 8（(x&15)−8 范围 [-8,7]），mesh 放在 section 原点 + 8
+  const existing = meshes.get(key)
+  const mat = new THREE.MeshBasicMaterial(Object.assign({ map: firstTexture, transparent: true, opacity: 0 }, BASE_MAT_OPTS))
+  let mesh
+  if (existing) {
+    mesh = existing
+    mesh.geometry.dispose()
+    mesh.geometry = geo
+    mesh.material.dispose()
+    mesh.material = mat
+  } else {
+    mesh = new THREE.Mesh(geo, mat)
+    mesh.name = key
+    scene.add(mesh)
+    meshes.set(key, mesh)
+  }
+  mesh.position.set(origin.x + 8, origin.y + 8, origin.z + 8)
+
+  // 0.18s 淡入：仅对首次出现的 section 执行。dirty 重建直接以最终透明度呈现，
+  // 避免高频更新把 opacity 反复重置为 0、导致画面长期近乎全透明。
+  if (existing) {
+    mesh.material.opacity = 1
+    return
+  }
+  const t0 = performance.now()
+  const fade = () => {
+    const p = clamp((performance.now() - t0) / 180, 0, 1)
+    const e = 1 - Math.pow(1 - p, 2)
+    mesh.material.opacity = e
+    if (p < 1) requestAnimationFrame(fade)
+  }
+  fade()
+}
+
+function removeGeometry (key) {
+  const mesh = meshes.get(key)
+  if (!mesh) return
+  meshes.delete(key)
+  scene.remove(mesh)
+  mesh.geometry.dispose()
+  mesh.material.dispose()
+}
+
+// ============ Worker 协议 ============
+function startWorker (tex, initInfo) {
+  firstTexture = tex
+  worker = new Worker('src/viewer-core/mesh-worker.js', { type: 'module' })
+
+  worker.onmessage = ({ data }) => {
+    if (!data || !data.type) return
+    switch (data.type) {
+      case 'ready': {
+        workerReady = true
+        setStreamState('connected')
+        // 用已有 bot 位置初始化
+        if (botPos) postCenter(botPos)
+        break
+      }
+      case 'error':
+        showFatal(data.message || 'Worker 错误')
+        break
+      case 'need-column':
+        enqueueFetch(data.cx, data.cz)
+        break
+      case 'geometry':
+        addGeometry(data)
+        break
+      case 'gone':
+        removeGeometry(data.key)
+        break
+      case 'remove-column': {
+        const prefix = `${data.cx},${data.cz}/`
+        for (const key of [...meshes.keys()]) if (key.startsWith(prefix)) removeGeometry(key)
+        break
+      }
+      case 'blockinfo':
+        onBlockInfo(data)
+        break
+      case 'stats':
+        onWorkerStats(data)
+        break
+      case 'geometry-error':
+        setStatus(`几何构建失败 ${data.key}: ${data.message}`, 'err')
+        break
+    }
+  }
+  worker.onerror = (e) => { setStatus('Worker 异常: ' + (e.message || 'unknown'), 'err') }
+  worker.postMessage({ type: 'init', viewDistance: initInfo.viewDistance || 6 })
+}
+
+// ---- 区块拉取（每列单飞 + 并发上限 8）----
+function enqueueFetch (cx, cz) {
+  const key = `${cx},${cz}`
+  if (fetchInFlight.has(key) || fetchQueue.some((j) => j.key === key)) return
+  fetchQueue.push({ key, cx, cz })
+  pumpFetch()
+}
+
+async function pumpFetch () {
+  while (fetchQueue.length && fetchInFlight.size < 8) {
+    const job = fetchQueue.shift()
+    fetchInFlight.add(job.key)
+    const t0 = performance.now()
+    try {
+      const res = await fetch(`/chunk?cx=${job.cx}&cz=${job.cz}`)
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      const ab = await res.arrayBuffer()
+      const dt = performance.now() - t0
+      lastSyncMs = dt
+      $('st-sync').textContent = Math.round(dt)
+      if (ab.byteLength > 0) {
+        netCnt.ok++
+        bumpNet()
+        worker.postMessage({ type: 'chunk', cx: job.cx, cz: job.cz, buffer: ab }, [ab])
+      } else {
+        netCnt.empty++
+        bumpNet()
+        worker.postMessage({ type: 'chunk-empty', cx: job.cx, cz: job.cz })
+      }
+    } catch (err) {
+      netCnt.err++
+      bumpNet()
+      if (netCnt.err <= 8) console.warn(`[live] /chunk ${job.cx},${job.cz} 拉取失败:`, err)
+      setStatus(`区块拉取异常 ×${netCnt.err}`, 'warn')
+      // 网络抖动：延迟后重试一次
+      setTimeout(() => { fetchQueue.push(job); pumpFetch() }, 400)
+    } finally {
+      fetchInFlight.delete(job.key)
+    }
+  }
+}
+
+// ============ SSE 实时通知 ============
+let es = null
+let botPos = { x: 0, y: 64, z: 0 }
+let followBot = true
+let lastCenterPost = 0
+const stateMsg = $('st-pos')
+
+function connectEvents (initInfo) {
+  es = new EventSource('/events')
+  es.addEventListener('hello', () => setStreamState('connected'))
+
+  es.addEventListener('center', (ev) => {
+    try {
+      const c = JSON.parse(ev.data)
+      botPos = c
+      updateBotHud(c)
+      if (followBot) postCenter(c)
+      else setStreamState('connected')
+    } catch { /* ignore */ }
+  })
+
+  es.addEventListener('column', (ev) => {
+    try {
+      const c = JSON.parse(ev.data)
+      worker.postMessage({ type: 'column', cx: c.cx, cz: c.cz })
+    } catch { /* ignore */ }
+  })
+
+  es.addEventListener('block', (ev) => {
+    try {
+      const b = JSON.parse(ev.data)
+      worker.postMessage({ type: 'block', x: b.x, y: b.y, z: b.z, stateId: b.stateId })
+    } catch { /* ignore */ }
+  })
+
+  es.onerror = () => setStreamState('reconnecting')
+  es.onopen = () => { if (workerReady) setStreamState('connected') }
+}
+
+let lastSyncMs = 0
+function updateBotHud (c) {
+  stateMsg.textContent = `x ${c.x.toFixed(1)} y ${c.y.toFixed(1)} z ${c.z.toFixed(1)}`
+}
+
+function postCenter (c) {
+  // 中心消息 ≤ 4Hz 足够（区块按列粒度）；worker 就绪前收到也会缓存到就绪后消费
+  const now = performance.now()
+  if (now - lastCenterPost < 250) return
+  lastCenterPost = now
+  worker.postMessage({ type: 'center', x: c.x, y: c.y, z: c.z })
+}
+
+function setStreamState (state) {
+  const dot = $('dot')
+  const badge = $('badge-stream')
+  const bar = $('statusbar')
+  if (state === 'connected') {
+    dot.className = 'dot'
+    badge.textContent = 'stream: connected'
+    bar.classList.remove('warn', 'err')
+    setStatus('实时')
+  } else if (state === 'reconnecting') {
+    dot.className = 'dot busy'
+    badge.textContent = 'stream: 重连中'
+    bar.classList.add('warn')
+    setStatus('区块流重连中…', 'warn')
+  }
+}
+
+// ============ 悬停 / 查询 ============
+let hoverQueryId = 0
+let lastHoverCell = null
+let hoverCursor = 'default'
+
+function onPointerMove (e) {
+  eventX = e.clientX
+  eventY = e.clientY
+  const rect = renderer.domElement.getBoundingClientRect()
+  pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+  pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+  raycaster.setFromCamera(pointer, camera)
+
+  const hits = raycaster.intersectObjects([...meshes.values()], false)
+  if (!hits.length) {
+    if (lastHoverCell !== null) { lastHoverCell = null; hideHover() }
+    renderer.domElement.style.cursor = hoverCursor = 'default'
+    return
+  }
+  const hit = hits[0]
+  const n = hit.face ? hit.face.normal : new THREE.Vector3(0, 1, 0)
+  const bx = Math.floor(hit.point.x - n.x * 0.08)
+  const by = Math.floor(hit.point.y - n.y * 0.08)
+  const bz = Math.floor(hit.point.z - n.z * 0.08)
+  const cell = `${bx},${by},${bz}`
+  if (cell !== lastHoverCell) {
+    lastHoverCell = cell
+    hoverQueryId++
+    worker.postMessage({ type: 'query', id: hoverQueryId, x: bx, y: by, z: bz })
+  }
+  renderer.domElement.style.cursor = hoverCursor = 'pointer'
+}
+
+function showHoverBox (x, y, z) {
+  if (!hoverLine) {
+    const g = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.001, 1.001, 1.001))
+    const m = new THREE.LineBasicMaterial({ color: 0x58a6ff, transparent: true, opacity: 0.9 })
+    hoverLine = new THREE.LineSegments(g, m)
+    scene.add(hoverLine)
+  }
+  hoverLine.position.set(x + 0.5, y + 0.5, z + 0.5)
+  hoverLine.visible = true
+}
+
+function hideHover () {
+  if (hoverLine) hoverLine.visible = false
+  $('tooltip').style.display = 'none'
+}
+
+function onBlockInfo (d) {
+  if (d.id !== hoverQueryId || lastHoverCell === null) return
+  const parts = lastHoverCell.split(',')
+  const x = Number(parts[0]); const y = Number(parts[1]); const z = Number(parts[2])
+  if (!d.name) { hideHover(); return }
+  showHoverBox(x, y, z)
+  $('tt-name').textContent = d.name
+  $('tt-pos').textContent = `(${x}, ${y}, ${z})`
+  const tip = $('tooltip')
+  tip.style.display = 'block'
+  tip.style.left = Math.min(eventX + 14, window.innerWidth - 220) + 'px'
+  tip.style.top = Math.min(eventY + 14, window.innerHeight - 60) + 'px'
+}
+let eventX = 0; let eventY = 0
+renderer = null
+
+// ============ HUD 更新（数字缓动）============
+const counters = { sec: 0, dirty: 0 }
+const elSec = $('st-sec'); const elDirty = $('st-dirty')
+function onWorkerStats (s) {
+  counters.dirty = s.dirty
+  elSec.textContent = meshes.size
+}
+function tickStatus () {
+  // 简单缓动到目标（每秒 ~30 次）
+  elDirty.textContent = counters.dirty
+}
+
+// ============ 视角 ============
+function resetView () {
+  if (!botPos) return
+  camera.position.set(botPos.x + 14, botPos.y + 12, botPos.z + 14)
+  controls.target.set(botPos.x, botPos.y, botPos.z)
+  controls.update()
+}
+
+// ============ 状态条 ============
+function setStatus (text, kind) {
+  $('st-status').textContent = text
+  $('statusbar').classList.toggle('warn', kind === 'warn')
+  $('statusbar').classList.toggle('err', kind === 'err')
+}
+
+function showFatal (msg) {
+  setStatus('加载失败', 'err')
+  $('notice').style.display = 'flex'
+  $('notice-box').innerHTML = `<h3>实时查看器启动失败</h3><p>${msg}</p><br><p>请确认已在游戏内执行 <code>!liveview enable</code>，且浏览器与本机端口一致。</p>`
+}
+
+// ============ 按钮 ============
+let aoOn = true
+
+function bindButtons () {
+  $('btn-ao').addEventListener('click', () => {
+    aoOn = !aoOn
+    const btn = $('btn-ao')
+    btn.textContent = `AO 光影: ${aoOn ? '开' : '关'}`
+    btn.classList.toggle('active', aoOn)
+    worker.postMessage({ type: 'rebuild', ao: aoOn })
+  })
+  $('btn-follow').addEventListener('click', () => {
+    followBot = !followBot
+    const btn = $('btn-follow')
+    btn.textContent = `跟随 bot: ${followBot ? '开' : '关'}`
+    btn.classList.toggle('active', followBot)
+    if (followBot && botPos) {
+      controls.target.set(botPos.x, botPos.y, botPos.z)
+      controls.update()
+    }
+  })
+  $('btn-reset').addEventListener('click', resetView)
+  $('btn-rebuild').addEventListener('click', () => worker.postMessage({ type: 'rebuild', ao: aoOn }))
+}
+
+// ============ 主循环 ============
+let prevFollowTarget = null
+function animate () {
+  requestAnimationFrame(animate)
+  controls.update()
+  // 跟随 bot：整组视角随 bot 平移（保留用户相对视角）
+  if (followBot && botPos) {
+    const t = new THREE.Vector3(botPos.x, botPos.y + 0.2, botPos.z)
+    if (prevFollowTarget) {
+      const delta = new THREE.Vector3().subVectors(t, prevFollowTarget)
+      camera.position.add(delta)
+    }
+    prevFollowTarget = t
+    controls.target.copy(t)
+  } else {
+    prevFollowTarget = null
+  }
+  tickStatus()
+  renderer.render(scene, camera)
+}
+
+// ============ 启动 ============
+async function boot () {
+  if (!(window.THREE && window.THREE.OrbitControls)) {
+    showFatal('three.js 未加载——请通过 !liveview 启动的本地服务器访问本页')
+    return
+  }
+  initThree()
+  let initInfo
+  try {
+    const res = await fetch('/api/info')
+    initInfo = await res.json()
+  } catch {
+    showFatal('无法连接 /api/info——请先在游戏内执行 !liveview enable')
+    return
+  }
+  if (initInfo.center) botPos = initInfo.center
+  viewDistance = initInfo.viewDistance || 6
+  updateBotHud(botPos)
+  bindButtons()
+  try {
+    const tex = await loadAtlasTexture()
+    startWorker(tex, initInfo)
+    connectEvents(initInfo)
+    resetView()
+    animate()
+    setStatus('就绪 — 拖动旋转 / 滚轮缩放 / 悬停查看方块')
+    $('badge-mode').textContent = `biome: ${initInfo.biome || 'plains'}`
+  } catch (err) {
+    showFatal(err.message)
+  }
+}
+
+// ============ 调试句柄（module 作用域变量 Console 不可达，挂到 window）============
+window.__live = {
+  get meshes () { return meshes },
+  get renderer () { return renderer },
+  get camera () { return camera },
+  get controls () { return controls },
+  get scene () { return scene },
+  get worker () { return worker },
+  get botPos () { return botPos }
+}
+
+boot()
+</script>
+</body>
+</html>

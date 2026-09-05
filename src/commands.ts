@@ -6,6 +6,7 @@ import { ts } from './logger.js';
 import { getConfig, reloadConfig } from './config.js';
 import { state, type MachineActor, type MachineSnapshot, type MachineValue } from './state.js';
 import { showView, stopView } from './view.js';
+import { enableLiveView, disableLiveView } from './viewer-server/live-view.js';
 import type { Bot } from 'mineflayer';
 
 // ESM 下无全局 require，用 createRequire 提供（!eval 沙箱注入 require）
@@ -279,6 +280,8 @@ function showHelp(): void {
     console.log('  !reload         重新加载 config.json');
     console.log('  !view enable [端口] 启动 3D 可视化（可选端口，默认3000）');
     console.log('  !view disable   关闭 3D 可视化');
+    console.log('  !liveview enable [端口] 启动自研实时查看器（默认端口3001）');
+    console.log('  !liveview disable  关闭自研实时查看器');
     console.log('  !eval <代码>    执行调试代码（需 config.debug.evalEnabled=true 且 DEBUG=1/true）');
     console.log('  !quit           退出程序');
     console.log('  直接输入文字则发送到服务器聊天');
@@ -322,6 +325,19 @@ export function handleLocalCommand(input: string): void {
             } else {
                 console.log(`${ts()}⚠️ 用法错误: !view enable [端口] 或 !view disable`);
                 console.log(`${ts()}ℹ️ 示例: !view enable 3000 / !view disable`);
+            }
+            break;
+        }
+        case 'liveview': {
+            const sub = (parts[1] || '').toLowerCase();
+            if (sub === 'enable') {
+                const p = parseInt(parts[2], 10);
+                enableLiveView(bot!, Number.isInteger(p) && p > 0 && p < 65536 ? p : 3001);
+            } else if (sub === 'disable') {
+                disableLiveView();
+            } else {
+                console.log(`${ts()}⚠️ 用法错误: !liveview enable [端口] 或 !liveview disable`);
+                console.log(`${ts()}ℹ️ 示例: !liveview enable 3001 / !liveview disable`);
             }
             break;
         }

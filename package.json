@@ -7,7 +7,10 @@
     "build": "tsc && node -e \"require('node:fs').copyFileSync('src/viewer-patch.cjs','dist/src/viewer-patch.cjs')\"",
     "start": "node dist/index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "verify:viewer": "node verification/verify-viewer-assets.cjs"
+    "verify:viewer": "node verification/verify-viewer-assets.cjs",
+    "verify:render": "node verification/verify-render.js",
+    "verify:server": "node verification/verify-live-server.mjs",
+    "verify": "npm run verify:viewer && npm run verify:render && npm run verify:server"
   },
   "keywords": [],
   "type": "module",
