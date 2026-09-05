@@ -55,6 +55,9 @@ export function createBotWithToken(authData: AuthData): Promise<Bot> {
                 port: CONFIG.server.port,
                 version: CONFIG.server.version,
                 username: authData.selectedProfile.name,
+                // 关闭 mineflayer loader 默认注册的 bot.on('error', err => console.log(err))，
+                // 否则每个连接错误会打印两次（一次无时间戳的裸打印 + 一次我们带 ts() 前缀的）
+                logErrors: false,
                 auth: (client: Client, options: ClientOptions) => {
                     client.username = authData.selectedProfile.name;
                     client.uuid = authData.selectedProfile.id;
@@ -178,12 +181,16 @@ export function createBotWithToken(authData: AuthData): Promise<Bot> {
 
             bot.on('kicked', function (this: Bot, reason: string) {
                 console.log(`${ts()}⚠️ 被踢出: ${reason}`);
-                const wasCurrent = (bot === this);
+                const wasCurrent = (bot === this); // 本次建连的 Promise 归属（连接 Promise 属于具体那次建连）
+                // 身份守卫：只有当前活跃 bot 才允许触发状态机事件。
+                // 旧 bot 的 socket 在网络异常下可能延迟到新 bot 进服后才触发事件，
+                // 若无此守卫会把 online 打回 retry 并让新会话变成无人引用的幽灵。
+                const isActive = (state.bot === this);
                 if (wasCurrent && !settled) {
                     settled = true;
                     reject(new Error('被踢出: ' + reason));
                 }
-                onBotDisconnect(wasCurrent ? this : null);
+                if (isActive) onBotDisconnect(this);
             });
 
             bot.on('error', function (this: Bot, err: Error) {
@@ -191,27 +198,33 @@ export function createBotWithToken(authData: AuthData): Promise<Bot> {
                 if (err.message && err.message.includes('Invalid session')) {
                     console.error(`${ts()}⚠️ Token 无效，尝试重新认证...`);
                 }
-                const wasCurrent = (bot === this);
+                const wasCurrent = (bot === this); // 本次建连的 Promise 归属
+                const isActive = (state.bot === this); // 身份守卫：仅当前活跃 bot 才允许驱动状态机
                 if (wasCurrent && !settled) {
                     settled = true;
                     reject(err);
                 }
-                onBotDisconnect(wasCurrent ? this : null);
+                if (isActive) onBotDisconnect(this);
             });
 
             bot.on('end', function (this: Bot) {
                 console.log(`${ts()}ℹ️ 连接已结束。`);
-                stopAutoEatPolling(this); // bot 断开时移除 health 监听
-                const wasCurrent = (bot === this);
+                stopAutoEatPolling(this); // bot 断开时移除 health 监听（内部按归属校验，不会误清新 bot 的监听）
+                const wasCurrent = (bot === this); // 本次建连的 Promise 归属
+                const isActive = (state.bot === this); // 身份守卫：仅当前活跃 bot 才允许清理共享引用与驱动状态机
                 if (wasCurrent) {
                     bot = null;
-                    state.bot = null;
                 }
                 if (wasCurrent && !settled) {
                     settled = true;
                     reject(new Error('连接结束'));
                 }
-                onBotDisconnect(wasCurrent ? this : null);
+                if (isActive) {
+                    // 先发事件再清引用：onBotDisconnect 依赖调用时刻的共享状态，
+                    // 静默断线（无 error/kicked、只有 end）时若先清引用会丢掉重连触发
+                    onBotDisconnect(this);
+                    state.bot = null;
+                }
             });
         } catch (error) {
             console.error(`${ts()}❌ createBotWithToken 内部错误:`, (error as Error).stack || error);
