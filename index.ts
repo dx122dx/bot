@@ -8,6 +8,7 @@ import { authenticate } from './src/auth.js';
 import { createBotWithToken } from './src/connect.js';
 import { stopAutoEatPolling } from './src/autoEat.js';
 import { initConsole } from './src/commands.js';
+import { destroyBot } from './src/botLifecycle.js';
 import { state } from './src/state.js';
 import type { BotConfig } from './src/config.js';
 
@@ -108,7 +109,7 @@ function shutdown(reason = '未知原因导致退出'): void {
 
     // 断开机器人
     if (state.bot) {
-        try { state.bot.end('程序退出'); } catch (e) { /* ignore */ }
+        destroyBot(state.bot, '程序退出');
         state.bot = null;
     }
 

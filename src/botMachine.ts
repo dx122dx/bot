@@ -18,11 +18,12 @@
 //   CONNECT_SUCCESS    由 invoke onDone 内部产生，等价旧 FSM 连接成功 → online
 //   CONNECT_ERROR      由 invoke onError 内部产生，等价旧 FSM 连接失败 → retry
 //   DISCONNECT         意外断线（仅 online 生效，其余状态被忽略）
-//   YIELD              让位退出（仅 online 生效 → waiting，并执行 bot.end('让位退出')）
+//   YIELD              让位退出（仅 online 生效 → waiting，并销毁 bot）
 //   MANUAL_DISCONNECT  手动断开（任意状态 → offline）
 import { setup, assign, fromPromise } from 'xstate';
 import type { Bot } from 'mineflayer';
 import { ts } from './logger.js';
+import { destroyBot, abortPendingConnect } from './botLifecycle.js';
 import type { BotConfig } from './config.js';
 
 // 认证数据（yggdrasil 响应结构；auth.ts 返回、connect.ts 消费）
@@ -85,11 +86,23 @@ export function createBotMachine(deps: BotMachineDeps) {
             REJOIN_DELAY: () => config.autoReconnect.rejoinDelay,
         },
         actions: {
-            // 让位退出：等价原 messagestr 命中后的 bot.end('让位退出')
+            // 让位退出：统一销毁 bot（幂等）
             yieldBot: ({ context }) => {
                 if (context.bot) {
-                    context.bot.end('让位退出');
+                    destroyBot(context.bot, '让位退出');
                 }
+            },
+            // 断线/离线清理：context.bot 只在 CONNECT_SUCCESS 时赋值，若不清空，
+            // retry/waiting/offline 会一直持有已断开的 bot 及其 client（僵尸对象）
+            disposeBot: ({ context }) => {
+                if (context.bot) {
+                    destroyBot(context.bot, '断线清理');
+                }
+            },
+            // 建连被取消（connecting → authenticating/offline）：invoke 结果被丢弃，
+            // 已创建的 bot 无人 end，由 connect 层登记的句柄主动关闭
+            abortConnect: () => {
+                abortPendingConnect('建连被取消');
             },
             // 自动进食（简单任务落地）：online.performing 的 entry 动作，
             // 由 health 桥接事件 HUNGER_LOW 触发，配置经 config.autoEat 读取
@@ -111,6 +124,7 @@ export function createBotMachine(deps: BotMachineDeps) {
         },
         states: {
             offline: {
+                entry: ['disposeBot', assign({ bot: null })],
                 on: {
                     CONNECT: 'authenticating',
                 },
@@ -134,6 +148,7 @@ export function createBotMachine(deps: BotMachineDeps) {
             },
 
             connecting: {
+                exit: 'abortConnect',
                 invoke: {
                     src: 'connectService',
                     // authData 进入 connecting 前必已被 onDone assign（非 null），! 断言与旧 JS 直接传递行为一致
@@ -181,6 +196,7 @@ export function createBotMachine(deps: BotMachineDeps) {
             },
 
             retry: {
+                entry: ['disposeBot', assign({ bot: null })],
                 after: {
                     RETRY_DELAY: [
                         {
@@ -198,7 +214,7 @@ export function createBotMachine(deps: BotMachineDeps) {
             },
 
             waiting: {
-                entry: assign({ retryCount: 0 }), // 长等待后重新开始快速重试计数
+                entry: [assign({ retryCount: 0 }), 'disposeBot', assign({ bot: null })], // 长等待后重新开始快速重试计数
                 after: {
                     REJOIN_DELAY: 'authenticating',
                 },

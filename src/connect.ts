@@ -8,6 +8,7 @@ import { state } from './state.js';
 import { handleCustomJoin } from './auth.js';
 import { startAutoEatPolling, stopAutoEatPolling } from './autoEat.js';
 import { installInteractions } from './interact.js';
+import { destroyBot, trackConnect, type ConnectHandle } from './botLifecycle.js';
 import type { Bot } from 'mineflayer';
 import type { Client, ClientOptions } from 'minecraft-protocol';
 import type { ChatMessage } from 'prismarine-chat';
@@ -39,12 +40,27 @@ export function onBotDisconnect(sourceBot: Bot | null): void {
 export function createBotWithToken(authData: AuthData): Promise<Bot> {
     const CONFIG = getConfig(); // 每次连接取最新配置（!reload 后新连接生效）
     return new Promise<Bot>((resolve, reject) => {
-        let settled = false; // 防止重复 resolve/reject
+        // 建连句柄：登记到 botLifecycle，供状态机离开 connecting 时中止（中止后本 Promise 不再结算）
+        const handle: ConnectHandle = { bot: null, settled: false };
+        trackConnect(handle);
         let connectTimeout: NodeJS.Timeout | null = null;
         let bot: Bot | null = null;
+
+        // 统一结算：置位 + 清连接超时定时器（避免结算后定时器继续跑并误伤连接）
+        const settle = (err?: unknown): void => {
+            if (handle.settled) return;
+            handle.settled = true;
+            if (connectTimeout) {
+                clearTimeout(connectTimeout);
+                connectTimeout = null;
+            }
+            if (err !== undefined) reject(err);
+            else resolve(bot as Bot);
+        };
+
         try {
             if (state.bot) {
-                state.bot.end(); // 手动重连/新会话：断开旧 bot（end 事件在非 online 状态被忽略）
+                destroyBot(state.bot, '重新建连前清理旧 bot'); // 手动重连/新会话：断开旧 bot（end 事件在非 online 状态被忽略）
                 state.bot = null;
             }
 
@@ -78,19 +94,12 @@ export function createBotWithToken(authData: AuthData): Promise<Bot> {
                     options.connect!(client);
                 }
             });
+            handle.bot = bot;
 
             connectTimeout = setTimeout(() => {
                 if (bot && !bot.entity) {
                     console.error(`${ts()}❌ 连接超时（10 秒内未能进入服务器），正在断开...`);
-                    try {
-                        if (bot._client && bot._client.socket) {
-                            bot._client.socket.destroy();
-                        } else {
-                            bot.end('连接超时');
-                        }
-                    } catch (e) {
-                        console.error(`${ts()}❌ 断开失败:`, e);
-                    }
+                    destroyBot(bot, '连接超时');
                 }
             }, 10000);
 
@@ -150,10 +159,7 @@ export function createBotWithToken(authData: AuthData): Promise<Bot> {
                     }, 1000);
                 }
 
-                if (!settled) {
-                    settled = true;
-                    resolve(bot!); // spawn 成功 → resolve 建连 Promise（spawn 时 bot 必非 null），驱动状态机进入 online
-                }
+                settle(); // spawn 成功 → 结算建连 Promise（spawn 时 bot 必非 null），驱动状态机进入 online
             });
 
             bot.on('message', (msg: ChatMessage, position: string) => {
@@ -186,9 +192,8 @@ export function createBotWithToken(authData: AuthData): Promise<Bot> {
                 // 旧 bot 的 socket 在网络异常下可能延迟到新 bot 进服后才触发事件，
                 // 若无此守卫会把 online 打回 retry 并让新会话变成无人引用的幽灵。
                 const isActive = (state.bot === this);
-                if (wasCurrent && !settled) {
-                    settled = true;
-                    reject(new Error('被踢出: ' + reason));
+                if (wasCurrent && !handle.settled) {
+                    settle(new Error('被踢出: ' + reason));
                 }
                 if (isActive) onBotDisconnect(this);
             });
@@ -200,9 +205,8 @@ export function createBotWithToken(authData: AuthData): Promise<Bot> {
                 }
                 const wasCurrent = (bot === this); // 本次建连的 Promise 归属
                 const isActive = (state.bot === this); // 身份守卫：仅当前活跃 bot 才允许驱动状态机
-                if (wasCurrent && !settled) {
-                    settled = true;
-                    reject(err);
+                if (wasCurrent && !handle.settled) {
+                    settle(err);
                 }
                 if (isActive) onBotDisconnect(this);
             });
@@ -215,23 +219,20 @@ export function createBotWithToken(authData: AuthData): Promise<Bot> {
                 if (wasCurrent) {
                     bot = null;
                 }
-                if (wasCurrent && !settled) {
-                    settled = true;
-                    reject(new Error('连接结束'));
+                if (wasCurrent && !handle.settled) {
+                    settle(new Error('连接结束'));
                 }
                 if (isActive) {
                     // 先发事件再清引用：onBotDisconnect 依赖调用时刻的共享状态，
                     // 静默断线（无 error/kicked、只有 end）时若先清引用会丢掉重连触发
                     onBotDisconnect(this);
+                    destroyBot(this, '连接结束'); // 幂等：socket 已关闭时仅做兜底校验
                     state.bot = null;
                 }
             });
         } catch (error) {
             console.error(`${ts()}❌ createBotWithToken 内部错误:`, (error as Error).stack || error);
-            if (!settled) {
-                settled = true;
-                reject(error);
-            }
+            settle(error);
         }
     });
 }

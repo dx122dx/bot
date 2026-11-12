@@ -7,6 +7,7 @@ import { getConfig, reloadConfig } from './config.js';
 import { state, type MachineActor, type MachineSnapshot, type MachineValue } from './state.js';
 import { showView, stopView } from './view.js';
 import { enableLiveView, disableLiveView } from './viewer-server/live-view.js';
+import { destroyBot } from './botLifecycle.js';
 import type { Bot } from 'mineflayer';
 
 // ESM 下无全局 require，用 createRequire 提供（!eval 沙箱注入 require）
@@ -302,7 +303,7 @@ export function handleLocalCommand(input: string): void {
         case 'dc':
             console.log(`${ts()}⏸️ 手动断开连接（可用 !connect 重新连接）`);
             if (bot) {
-                try { bot.end('手动断开'); } catch (e) { /* ignore */ }
+                destroyBot(bot, '手动断开');
                 state.bot = null;
             }
             actor!.send({ type: 'MANUAL_DISCONNECT' }); // 任意状态 → offline
@@ -310,7 +311,7 @@ export function handleLocalCommand(input: string): void {
         case 'connect':
             console.log(`${ts()}🔄 立即重新连接...`);
             if (bot) {
-                try { bot.end('手动重连'); } catch (e) { /* ignore */ }
+                destroyBot(bot, '手动重连');
                 state.bot = null;
             }
             actor!.send({ type: 'CONNECT' }); // 任意状态 → authenticating（自动取消进行中的认证/建连）
