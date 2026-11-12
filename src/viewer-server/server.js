@@ -49,7 +49,7 @@ export class LiveServer {
    *   biome: string,              // 固定生物群系名（plains）
    *   viewDistance: number,
    *   infoExtra?: object,
-   *   streamGetter?: () => import('./chunk-stream.js').ChunkStream
+   *   getCenter?: () => { x: number, y: number, z: number }
    * }} opts
    */
   constructor (opts) {

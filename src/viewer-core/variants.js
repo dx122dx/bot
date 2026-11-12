@@ -1,4 +1,4 @@
-// variants.js —— 方块状态 → 模型变体选择（迁移自 minecraft-viewer.html，保留其 AIR 精确匹配修复）
+// variants.js —— 方块状态 → 模型变体选择
 'use strict'
 
 import { AIR_BLOCK_NAMES } from './constants.js'
@@ -27,10 +27,10 @@ export function matchProperties (block, properties) {
 }
 
 /**
- * 从 blocksStates 为 block 选出命中的模型变体。
- * 语义与 minecraft-viewer.html getModelVariants 一致（含 AIR 精确匹配修复）：
- * variants 分支取"首个 matchProperties 命中"（空 key '' 无条件命中——若它在对象键序最前会抢先，此为已知根因，下一步修复）；
- * multipart 分支聚合所有命中 part。
+ * 从 blocksStates 为 block 选出命中的模型变体：
+ * variants 分支先扫显式属性 key（精确匹配），全部未命中才回退空 key ''；multipart 分支聚合所有命中 part。
+ * 空 key（parseProperties('')==={}）对任意 props 都 matchProperties 为 true，
+ * 若先于显式 key 匹配就会无条件命中，使朝向/状态变体永远不可达。
  *
  * @param {import('./constants.js').BlockDescriptor} block
  * @param {object} blocksStates  blocksStates/1.20.1.json 解析结果
@@ -43,7 +43,7 @@ export function selectVariants (block, blocksStates) {
   const state = blocksStates[block.name] ?? blocksStates.missing_texture
   if (!state) return { variants: [], matchedKey: null, matchedBy: null }
   if (state.variants) {
-    // 精确优先（根因修复）：先扫显式属性 key（facing=…/rotation=…），再回退空 key ''。
+    // 精确优先：先扫显式属性 key（facing=…/rotation=…），再回退空 key ''。
     // 空 key（parseProperties('')==={}）对任意 props 都 matchProperties 为 true——
     // 若它在对象键序最前会无条件抢先命中，导致朝向/状态变体永远不可达。
     for (const [properties, variant] of Object.entries(state.variants)) {

@@ -9,7 +9,7 @@ declare module 'minecraft-protocol' {
     }
 
     interface SessionOption {
-        // connect.js 的 auth 回调向 client.session 额外写入用户名/会话 UUID
+        // connect.ts 的 auth 回调向 client.session 额外写入用户名/会话 UUID
         username?: string;
         uuid?: string;
     }

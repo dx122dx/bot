@@ -1,4 +1,4 @@
-// constants.js —— 渲染核心常量（迁移自 minecraft-viewer.html，与 prismarine-viewer models.js 一致）
+// constants.js —— 渲染核心常量（与 prismarine-viewer models.js 一致）
 'use strict'
 
 /** 图集尺寸。blocksStates 中预计算的 u/v/su/sv 已基于 2048 图集（文档常量，UV 无需再换算） */

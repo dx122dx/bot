@@ -1,4 +1,4 @@
-// geometry.js —— 面渲染与几何构建（迁移自 minecraft-viewer.html renderElement/buildGeometryForBlock，逐行对照 prismarine-viewer models.js）
+// geometry.js —— 面渲染与几何构建（逐行对照 prismarine-viewer models.js）
 'use strict'
 
 import { elemFaces, AIR_BLOCK_NAMES, LIQUID_NAMES } from './constants.js'
@@ -123,8 +123,7 @@ export function renderElement (world, cursor, element, doAO, attr, globalMatrix,
 
 /**
  * 构建单个方块的几何（voxel 坐标 x/y/z 为世界坐标；位置按 cursor & 15 内聚到 16³）。
- * 与 minecraft-viewer.html buildGeometryForBlock 行为一致，差异：
- *   - water/lava 不再跳过，改由 liquids.js 构建液面几何（返回值带 liquid 标记）；
+ *   - water/lava 不在此处出几何，由 liquids.js 构建液面几何（返回值带 liquid 标记）；
  *   - 空气类（AIR_BLOCK_NAMES）返回 null；
  *   - 无可用模型 / 无几何产出返回 null。
  * 注：block 须由调用方构造好 descriptor（props/isCube/transparent），本函数不依赖外部名单表。

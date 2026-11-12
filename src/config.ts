@@ -50,7 +50,7 @@ export interface BotConfig {
     autoEat: AutoEatConfig;
     autoReconnect: AutoReconnectConfig;
     behavior: BehaviorConfig;
-    debug: DebugConfig; // 默认值兜底后恒存在（2026-08-19 缺 debug 曾致 !status all 崩溃）
+    debug: DebugConfig; // 默认值兜底后恒存在，调用方无需判空
 }
 
 // ---------- 默认配置（参照 config.example.json；必填项留空由校验拦截） ----------

@@ -10,7 +10,7 @@
 //     计算，等价 prismarine-viewer world.js 的 isCube 判定）。
 //   - 列未加载返回 null → 渲染核心 geometry.js 对 null 邻居执行 continue，即「剔除该面」
 //     （与上游 prismarine-viewer models.js 行为一致：未加载列与已加载列交界处、以及视口
-//     最外圈的外向面不会被渲染）。注意：这与"保留该面"相反，勿按旧注释推导。
+//     最外圈的外向面不会被渲染）。
 //     列已加载但某 section 全 air（header 省略）视为全 0（air 描述）。
 //     空 header（count=0）表示服务器确认"列已载入但全空"。
 //
@@ -123,8 +123,8 @@ export class MirrorColumn {
 
 /**
  * 世界镜像。
- * 注：镜像区只含"已从服务器拉到的列"；对越界/未拉取邻居返回 null，
- * 使渲染核心在 chunk 边缘保留外露面（与 prismarine-viewer 行为一致）。
+ * 注：镜像区只含"已从服务器拉到的列"；越界/未拉取的邻居返回 null，
+ * 渲染核心据此剔除该面（与 prismarine-viewer 行为一致）。
  */
 export class MirrorWorld {
   constructor (decoder) {
@@ -258,8 +258,8 @@ export class MirrorWorld {
 
   /** 统计：已加载列数 / 已建 section 数。
    * 性能约定：stats 每 50ms 被 mesh-worker 调用一次，禁止逐格扫描——满视距下
-   * 169 列 × 12 section × 4096 格实测约 14ms/次，会吃掉 ~28% Worker 线程时间，
-   * cells 结果此前也无任何消费方。若日后需要非空格数，请在写入路径增量维护。
+   * 169 列 × 12 section × 4096 格实测约 14ms/次，会吃掉 ~28% Worker 线程时间。
+   * 需要非空格数时，请在写入路径增量维护。
    */
   stats () {
     let sections = 0

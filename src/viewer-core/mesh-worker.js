@@ -64,9 +64,8 @@ function inRect (cx, cz, cch, margin = 0) {
 
 /**
  * 由内向外列出矩形内全部目标列（近处优先）。
- * NOTE(2026-09-05 bugfix)：旧实现按"双环配对"枚举，(x∈(−rad,rad), z=±rad) 的
- * 上/下边中段列不会被推入 → 视距 6 时仅枚举 107/169 列、漏 62 列，漏列呈菱状空洞
- * 且永不加载（handleCenter 只会请求本函数返回的列）。改为全矩形逐列枚举 + 距离排序。
+ * 必须整矩形逐列枚举：只按环/边缘配对枚举会漏掉 (x∈(−rad,rad), z=±rad) 的上下边中段列，
+ * 视距 6 时 169 列只覆盖 107 列；漏列呈菱状空洞且永不加载（handleCenter 只请求本函数返回的列）。
  */
 function desiredColumns () {
   const c = parseChunkCenter()

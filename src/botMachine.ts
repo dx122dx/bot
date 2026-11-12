@@ -1,22 +1,17 @@
 // botMachine.ts —— XState v5 状态机
-// 替代旧 bot.js 中自建 FSM（OFFLINE/AUTHENTICATING/CONNECTING/ONLINE/RETRY/WAITING + 1s tick 主循环）。
-// 状态迁移与原 FSM 行为等价，但完全事件驱动：
+// 完全事件驱动，无轮询主循环：
 //   - invoke 托管认证/建连异步服务（离开状态时自动取消进行中的服务，天然解决竞态）
-//   - after 延迟迁移替代 retry/waiting 的倒计时轮询
+//   - after 延迟迁移承担 retry/waiting 的倒计时
 //   - guards 判断重试次数是否达到上限
-//   - CONNECT / MANUAL_DISCONNECT 在全部状态可用（等价于原 !connect / !disconnect 任意状态可触发）
+//   - CONNECT / MANUAL_DISCONNECT 在全部状态可用（任意状态可手动连接/断开）
 //
 // 接口约定（deps）：
 //   config:          CONFIG 对象（读取 autoReconnect.{retryDelayMs,maxRetryCount,rejoinDelay}）
 //   authService:     () => Promise<authData>            认证服务（resolve 认证数据 / reject 失败）
 //   connectService:  ({ authData }) => Promise<bot>     建连服务（resolve bot / reject 失败/超时）
 //
-// 状态机事件：
+// 外部事件（invoke 的 onDone/onError 由机器内部直接迁移，不产生自定义事件）：
 //   CONNECT            手动连接（任意状态触发，进行中的认证/建连会被自动取消）
-//   AUTH_SUCCESS       由 invoke onDone 内部产生，等价旧 FSM 认证成功 → connecting
-//   AUTH_ERROR         由 invoke onError 内部产生，等价旧 FSM 认证失败 → retry
-//   CONNECT_SUCCESS    由 invoke onDone 内部产生，等价旧 FSM 连接成功 → online
-//   CONNECT_ERROR      由 invoke onError 内部产生，等价旧 FSM 连接失败 → retry
 //   DISCONNECT         意外断线（仅 online 生效，其余状态被忽略）
 //   YIELD              让位退出（仅 online 生效 → waiting，并销毁 bot）
 //   MANUAL_DISCONNECT  手动断开（任意状态 → offline）
@@ -81,7 +76,7 @@ export function createBotMachine(deps: BotMachineDeps) {
             canRetry: ({ context }) => context.retryCount < config.autoReconnect.maxRetryCount,
         },
         delays: {
-            // 延迟值在创建机器时从 CONFIG 读入；!reload 后不自动更新（与 task.md 注意事项一致）
+            // 延迟值在创建机器时从 CONFIG 读入；!reload 后不自动更新（需重建机器才生效）
             RETRY_DELAY: () => config.autoReconnect.retryDelayMs,
             REJOIN_DELAY: () => config.autoReconnect.rejoinDelay,
         },
@@ -92,7 +87,7 @@ export function createBotMachine(deps: BotMachineDeps) {
                     destroyBot(context.bot, '让位退出');
                 }
             },
-            // 断线/离线清理：context.bot 只在 CONNECT_SUCCESS 时赋值，若不清空，
+            // 断线/离线清理：context.bot 只在建连成功时赋值，若不清空，
             // retry/waiting/offline 会一直持有已断开的 bot 及其 client（僵尸对象）
             disposeBot: ({ context }) => {
                 if (context.bot) {
@@ -151,7 +146,7 @@ export function createBotMachine(deps: BotMachineDeps) {
                 exit: 'abortConnect',
                 invoke: {
                     src: 'connectService',
-                    // authData 进入 connecting 前必已被 onDone assign（非 null），! 断言与旧 JS 直接传递行为一致
+                    // authData 进入 connecting 前必已由 onDone assign（非 null），故用 ! 断言
                     input: ({ context }) => ({ authData: context.authData! }),
                     onDone: {
                         target: 'online',
@@ -163,7 +158,7 @@ export function createBotMachine(deps: BotMachineDeps) {
                     onError: 'retry',
                 },
                 on: {
-                    // 立即重连：等价原 CONNECTING 状态按 !connect → 重新认证
+                    // 立即重连：重新走认证流程（进行中的建连由 exit 取消）
                     CONNECT: 'authenticating',
                     MANUAL_DISCONNECT: 'offline',
                 },

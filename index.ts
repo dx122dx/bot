@@ -12,15 +12,14 @@ import { destroyBot } from './src/botLifecycle.js';
 import { state } from './src/state.js';
 import type { BotConfig } from './src/config.js';
 
-// ---------- 初始化顺序（与原 bot.js 顶层等价） ----------
+// ---------- 初始化顺序 ----------
 
-// 1. 初始化日志重定向（最先调用：之后所有 console 输出写入 bot.log）
+// 初始化日志重定向（最先调用：之后所有 console 输出写入 bot.log）
 initLogger();
 
-// 2. 加载配置
 const CONFIG: BotConfig = loadConfig();
 
-// 3. 控制台 readline（TTY 保护依赖 rl，需先创建再注入 logger）
+// 控制台 readline（TTY 保护依赖 rl，需先创建再注入 logger）
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -28,7 +27,7 @@ const rl = readline.createInterface({
 });
 setRl(rl);
 
-// 4. XState 状态机（事件驱动，无每秒轮询）
+// XState 状态机（事件驱动，无每秒轮询）
 const machine = createBotMachine({
     config: CONFIG,
     authService: () => authenticate(),
@@ -76,7 +75,7 @@ function refreshPrompt() {
 // 初始化提示符（初始状态 offline；actor 尚未创建，refreshPrompt 内部直接返回）
 refreshPrompt();
 
-// 5. 控制台（rl 已创建并注入 logger）
+// 控制台（须在 rl 创建并注入 logger 之后调用）
 initConsole(rl);
 
 // ---------- 错误处理 ----------

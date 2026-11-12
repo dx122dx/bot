@@ -311,7 +311,7 @@ export function attachBlockClicked(bot: Bot): void {
 // 在 bot 创建后统一初始化（GUI 监听不依赖 viewer；viewer 点击挂接由 view.ts 在 viewer 创建后调用 attachBlockClicked）
 export function installInteractions(bot: Bot): void {
     // pathfinder 插件注入依赖 mineflayer 的 inject_allowed 事件（loader.js 用 setTimeout(0) 在 createBot
-    // 后下一 tick 才触发），此前的 loadPlugin 只会排队，bot.pathfinder 仍是 undefined。故：
+    // 后下一 tick 才触发）：在此之前调用 loadPlugin 只会排队，bot.pathfinder 仍是 undefined。故：
     // 1) 这里 try-catch 隔离，避免抛错连带中断 installGuiMonitor；
     // 2) bot.once('spawn') 时 inject_allowed 必已触发，loadPlugin 立即生效，再确保一次（双保险）。
     try {

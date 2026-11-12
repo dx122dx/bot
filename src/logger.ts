@@ -21,7 +21,7 @@ function resolveLogPath(): string {
 // 日志文件路径
 const LOG_FILE_PATH = resolveLogPath();
 
-// readline 实例（index.js 创建控制台后注入；TTY 保护输出需要它）
+// readline 实例（index.ts 创建控制台后注入；TTY 保护输出需要它）
 let rl: readline.Interface | null = null;
 
 // 去除 ANSI 转义码
@@ -61,7 +61,7 @@ function protectedOutput(fn: (...args: unknown[]) => void, args: unknown[]): voi
     }
 }
 
-// 初始化日志重定向（index.js 中最先调用，之后所有 console 输出都写入 bot.log）
+// 初始化日志重定向（index.ts 中最先调用，之后所有 console 输出都写入 bot.log）
 export function initLogger(): void {
     console.log = (...args: unknown[]) => protectedOutput(_origLog, args);
     console.error = (...args: unknown[]) => protectedOutput(_origError, args);

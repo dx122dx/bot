@@ -1,4 +1,4 @@
-// math.js —— 3×3 矩阵与向量工具（与 models.js / minecraft-viewer.html 逐行一致）
+// math.js —— 3×3 矩阵与向量工具（与 prismarine-viewer models.js 逐行一致）
 'use strict'
 
 export function vecadd3 (a, b) {

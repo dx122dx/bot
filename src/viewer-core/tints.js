@@ -5,12 +5,11 @@
 // 本文件只保留「哪些方块参与哪种着色」的语义分类，不持有任何色值。
 'use strict'
 
-// —— tintindex===0 时实际参与生物群系染色的植物白名单（根因修复 #3：删除"默认 grass"兜底）——
+// —— tintindex===0 时实际参与生物群系染色的植物白名单 ——
 // 判定依据：tintindex 只是"该面参与 block tint"的标记，具体颜色由方块语义决定。
-// 原 prismarine models.js 把所有 tintindex0 的非特殊方块一律染 grass[biome]，
-// 导致内容物纹理本色的方块（water_cauldron 水蓝 / powder_snow_cauldron 雪白 /
-// lava_cauldron 熔岩橙 等，vanilla 从不 biome tint）被染成草绿。这里改为白名单：
-// 只有语义上确实随生物群系变色的植物才取 grass/foliage；其余保持纹理本色（返回 null）。
+// 若把所有 tintindex0 的非特殊方块一律染 grass[biome]，内容物纹理本色的方块
+// （water_cauldron 水蓝 / powder_snow_cauldron 雪白 / lava_cauldron 熔岩橙 等，vanilla 从不 biome tint）
+// 会被染成草绿。因此只对语义上确实随生物群系变色的植物取 grass/foliage，其余保持纹理本色（返回 null）。
 export const GRASS_TINT_NAMES = new Set([
   'grass_block', // 草皮 overlay（顶/侧）
   'grass', 'tall_grass', 'fern', 'large_fern', 'potted_fern',
@@ -58,5 +57,5 @@ export function resolveTint (block, tintindex, palette) {
   if (GRASS_TINT_NAMES.has(name)) {
     return requirePalette(palette).grass
   }
-  return null // 不再兜底 grass：水罐/雪罐等保持纹理本色
+  return null // 不兜底 grass：水罐/雪罐等保持纹理本色
 }
