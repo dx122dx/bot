@@ -4,9 +4,9 @@
  *
  * 覆盖链路（真实 prismarine-registry 数据，无 bot/浏览器依赖）：
  *   prismarine-registry(1.20.1) → LiveServer / chunk-stream 自研二进制
- *     → HTTP(/api/info · /api/blocksStateMeta · /chunk gzip · /api/blocksStates)
+ *     → HTTP(/api/info · /api/blocksStateMeta · /api/tints · /chunk gzip · /api/blocksStates)
  *     → MirrorWorld 解码(stateId→name/props/isCube/transparent)
- *     → viewer-core buildSectionGeometry（渲染核心与浏览器同源）
+ *     → viewer-core buildSectionGeometry（渲染核心与浏览器同源，含液体分区）
  *
  * 跑法： node verification/verify-live-server.mjs
  * 退出码：0 通过 / 1 任一断言失败 / 2 运行错误
@@ -141,17 +141,44 @@ async function main () {
     check('WorldSync 形态(world.getColumn) 数据列', syncBuf && syncBuf.byteLength >= 6, `bytes=${syncBuf && syncBuf.byteLength}`)
     check('WorldSync 形态缺列 → null', syncStream.serializeColumn(-3, 3) === null)
 
-    // 6) blocksStates 静态数据可达（浏览器 Worker 用）
+    // 6) 着色器模块可被静态路由访问（viewer-live.html 直接 import 该路径）
+    const matRes = await fetch(`${base}/src/viewer-web/materials.js`)
+    check('着色器模块静态可达', matRes.ok && (await matRes.text()).includes('ShaderMaterial'), `status=${matRes.status}`)
+
+    // 6.1) blocksStates 静态数据可达（浏览器 Worker 用）
     const statesRes = await fetch(`${base}/api/blocksStates`)
     const statesJson = await statesRes.json()
     const stVariants = statesJson.stone && statesJson.stone.variants
     check('blocksStates 端点', statesRes.ok && stVariants && typeof stVariants === 'object' && Object.keys(stVariants).length >= 1, `stone variants keys=${stVariants ? Object.keys(stVariants).length : 0}`)
 
+    // 6.2) /api/tints：调色板按版本数据解析；草地必须真的是绿色（回归「草地近白/无色」）
+    const tints = await (await fetch(`${base}/api/tints`)).json()
+    const [gr, gg, gb] = tints.grass || []
+    check('tints 端点(grass 绿色)', tints.version === '1.20.1' && tints.biome === 'plains' && gg > gr && gr > gb && gg > 0.6,
+      `grass=${(tints.grass || []).map((v) => v.toFixed(3)).join(',')}`)
+    check('tints 端点(redstone/constant)', Array.isArray(tints.redstone) && tints.redstone.length === 16 && tints.constant && tints.constant.birch_leaves,
+      `redstone=${tints.redstone && tints.redstone.length} constant=${tints.constant ? Object.keys(tints.constant).length : 0}`)
+    check('tints 端点(water)', Array.isArray(tints.water) && tints.water.length === 3,
+      `water=${(tints.water || []).map((v) => v.toFixed(3)).join(',')}`)
+
     // 7) 渲染核心从镜像建几何（与浏览器 Worker 同源调用）：stone 基底 + chest 部件，顶点必须成对
-    const geo = buildSectionGeometry({ x: DATA_COL.cx * 16, y: 64, z: DATA_COL.cz * 16 }, mirror, statesJson, { doAO: true, biome: 'plains' })
+    const sectionOrigin = { x: DATA_COL.cx * 16, y: 64, z: DATA_COL.cz * 16 }
+    const geo = buildSectionGeometry(sectionOrigin, mirror, statesJson, { doAO: true, palette: tints })
     const verts = geo.positions.length / 3
     const tris = geo.indices.length / 3
     check('渲染核心从镜像产几何', verts > 1500 && verts === tris * 2, `verts=${verts} tris=${tris}`)
+
+    // 7.1) 液体：把 section 顶层一格替换成水源（上方为空 section），应只产出一个朝上的水面
+    const waterId = rec('water').mn
+    const wx = DATA_COL.cx * 16 + 6
+    const wy = -64 + 8 * 16 + 15
+    const wz = DATA_COL.cz * 16 + 6
+    mirror.applyBlock(wx, wy, wz, waterId)
+    const geoWet = buildSectionGeometry(sectionOrigin, mirror, statesJson, { doAO: true, palette: tints })
+    check('液体几何进入 waterIndices', !!geoWet && geoWet.waterIndices.length === 6,
+      `waterIdx=${geoWet && geoWet.waterIndices.length}（1 个顶面 = 6 索引）`)
+    check('液体不污染不透明分区', !!geoWet && geoWet.opaqueIndices.length > 0 && geoWet.lavaIndices.length === 0,
+      `opaqueIdx=${geoWet && geoWet.opaqueIndices.length} lavaIdx=${geoWet && geoWet.lavaIndices.length}`)
   } finally {
     await server.close()
   }

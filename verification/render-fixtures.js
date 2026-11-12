@@ -98,7 +98,10 @@ export const SNAPSHOT_LAYOUT = [
   { pos: { x: 1, y: 12, z: 7 }, make: () => makeBlock('oak_sign', { rotation: '8' }) },
   { pos: { x: 5, y: 12, z: 7 }, make: () => makeBlock('redstone_wire', { power: '15', east: 'none', north: 'none', south: 'none', west: 'none' }) },
   { pos: { x: 9, y: 12, z: 7 }, make: () => makeBlock('birch_leaves', {}, { isCube: true, transparent: true }) },
-  { pos: { x: 13, y: 12, z: 7 }, make: () => makeBlock('pink_petals', {}, { transparent: true }) }
+  { pos: { x: 13, y: 12, z: 7 }, make: () => makeBlock('pink_petals', {}, { transparent: true }) },
+  // 液体（周围全 air）：水源 8/9 高度、岩浆 level 2 → 6/9 高度
+  { pos: { x: 1, y: 16, z: 10 }, make: () => makeBlock('water', { level: '0' }, { transparent: true }) },
+  { pos: { x: 5, y: 16, z: 10 }, make: () => makeBlock('lava', { level: '2' }, { transparent: true }) }
 ]
 
 /** 生成快照场景 world（entries 带各自的 pos） */

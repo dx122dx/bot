@@ -1,12 +1,16 @@
 // geometry.js —— 面渲染与几何构建（迁移自 minecraft-viewer.html renderElement/buildGeometryForBlock，逐行对照 prismarine-viewer models.js）
 'use strict'
 
-import { elemFaces, AIR_BLOCK_NAMES } from './constants.js'
+import { elemFaces, AIR_BLOCK_NAMES, LIQUID_NAMES } from './constants.js'
 import { vecadd3, vecsub3, matmul3, matmulmat3, buildRotationMatrix } from './math.js'
 import { selectVariants } from './variants.js'
-import { resolveTint, DEFAULT_BIOME } from './tints.js'
+import { resolveTint } from './tints.js'
+import { appendLiquidGeometry } from './liquids.js'
 
-/** @typedef {{positions:number[],normals:number[],colors:number[],uvs:number[],indices:number[]}} GeometryAttr */
+/**
+ * @typedef {{positions:number[],normals:number[],colors:number[],uvs:number[],indices:number[]}} GeometryAttr
+ * 液体几何额外带 liquid 标记（'water'|'lava'），供 section 聚合时选择索引分区。
+ */
 
 /**
  * 渲染单个 element 的全部面，追加写入 attr（AO / cullface / UV rotation / tint 全在此）。
@@ -19,9 +23,9 @@ import { resolveTint, DEFAULT_BIOME } from './tints.js'
  * @param {Array|null} globalMatrix  变体级旋转矩阵（含 null=无）
  * @param {Array|null} globalShift   变体级平移（绕 [8,8,8] 中心）
  * @param {import('./constants.js').BlockDescriptor} block
- * @param {string} [biome]    着色 biome（默认 plains）
+ * @param {object} [palette]  服务端按版本解析的调色板（tint 色值来源）
  */
-export function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block, biome = DEFAULT_BIOME) {
+export function renderElement (world, cursor, element, doAO, attr, globalMatrix, globalShift, block, palette) {
   const cullIfIdentical = block.name.indexOf('glass') >= 0
 
   for (const face in element.faces) {
@@ -47,7 +51,7 @@ export function renderElement (world, cursor, element, doAO, attr, globalMatrix,
 
     const ndx = Math.floor(attr.positions.length / 3)
 
-    const resolved = resolveTint(block, eFace.tintindex, { biome })
+    const resolved = resolveTint(block, eFace.tintindex, palette)
     const tint = resolved || [1, 1, 1]
 
     // UV rotation
@@ -119,8 +123,8 @@ export function renderElement (world, cursor, element, doAO, attr, globalMatrix,
 
 /**
  * 构建单个方块的几何（voxel 坐标 x/y/z 为世界坐标；位置按 cursor & 15 内聚到 16³）。
- * 与 minecraft-viewer.html buildGeometryForBlock 行为一致：
- *   - water/lava 跳过（液体由 viewer 特殊处理，本核心首版不含）；
+ * 与 minecraft-viewer.html buildGeometryForBlock 行为一致，差异：
+ *   - water/lava 不再跳过，改由 liquids.js 构建液面几何（返回值带 liquid 标记）；
  *   - 空气类（AIR_BLOCK_NAMES）返回 null；
  *   - 无可用模型 / 无几何产出返回 null。
  * 注：block 须由调用方构造好 descriptor（props/isCube/transparent），本函数不依赖外部名单表。
@@ -131,12 +135,16 @@ export function renderElement (world, cursor, element, doAO, attr, globalMatrix,
  * @param {number} z
  * @param {object} blocksStates
  * @param {object} world   getBlock(x,y,z)→BlockDescriptor|null（调用方负责取整以消除浮点误差）
- * @param {{doAO?:boolean,biome?:string}} [opts]
+ * @param {{doAO?:boolean, palette?:object}} [opts]  palette 为服务端 /api/tints 下发的调色板
  * @returns {GeometryAttr|null}
  */
-export function buildBlockGeometry (block, x, y, z, blocksStates, world, { doAO = true, biome = DEFAULT_BIOME } = {}) {
+export function buildBlockGeometry (block, x, y, z, blocksStates, world, { doAO = true, palette } = {}) {
   const name = block.name
-  if (name === 'water' || name === 'lava') return null // 液体：本核心首版跳过（与演示页一致）
+  if (LIQUID_NAMES.has(name)) {
+    const attr = { positions: [], normals: [], colors: [], uvs: [], indices: [], liquid: name }
+    appendLiquidGeometry({ attr, world, blocksStates, palette }, x, y, z, block)
+    return attr.positions.length ? attr : null
+  }
   if (AIR_BLOCK_NAMES.has(name)) return null
 
   const { variants } = selectVariants(block, blocksStates)
@@ -159,7 +167,7 @@ export function buildBlockGeometry (block, x, y, z, blocksStates, world, { doAO 
       globalShift = vecsub3(globalShift, matmul3(globalMatrix, globalShift))
     }
     for (const element of v.model.elements) {
-      renderElement(world, { x, y, z }, element, v.model.ao && doAO, attr, globalMatrix, globalShift, block, biome)
+      renderElement(world, { x, y, z }, element, v.model.ao && doAO, attr, globalMatrix, globalShift, block, palette)
       built = true
     }
   }
@@ -176,15 +184,17 @@ export function buildBlockGeometry (block, x, y, z, blocksStates, world, { doAO 
  * @param {{x:number,y:number,z:number}} origin  section 最小角世界坐标（16 的倍数）
  * @param {object} world  getBlock(x,y,z)→BlockDescriptor|null
  * @param {object} blocksStates
- * @param {{doAO?:boolean,biome?:string}} [opts]
+ * @param {{doAO?:boolean, palette?:object}} [opts]
  * @returns {GeometryAttr|null}
  */
-export function buildSectionGeometry (origin, world, blocksStates, { doAO = true, biome = DEFAULT_BIOME } = {}) {
-  // indices 保持全量（供 verts/tris 统计与既有消费方）；opaqueIndices/alphaIndices 按方块
-  // 是否半透明（block.transparent）把三角分装——页面据此拆"不透明 mesh / alpha 混合 mesh"，
-  // 避免单 mesh 内透明与不透明面混排：不透明面与玻璃面同一渲染队列时不做片元级排序，
-  // 玻璃先画会以 depth 遮挡其后绘制的实心面（透过玻璃"消失/透视"）。
-  const attr = { positions: [], normals: [], colors: [], uvs: [], indices: [], opaqueIndices: [], alphaIndices: [] }
+export function buildSectionGeometry (origin, world, blocksStates, { doAO = true, palette } = {}) {
+  // indices 保持全量（供 verts/tris 统计与既有消费方）；三角按材质通道分装——页面据此拆出
+  // 不透明 / alpha 混合 / 水 / 岩浆 四个 mesh，既避免单 mesh 内透明与不透明面混排（玻璃先画
+  // 会以 depth 遮挡其后实心面），也让液体能用自己的材质做 UV 动画与半透明混合。
+  const attr = {
+    positions: [], normals: [], colors: [], uvs: [], indices: [],
+    opaqueIndices: [], alphaIndices: [], waterIndices: [], lavaIndices: []
+  }
   let any = false
   for (let by = 0; by < 16; by++) {
     for (let bz = 0; bz < 16; bz++) {
@@ -195,11 +205,15 @@ export function buildSectionGeometry (origin, world, blocksStates, { doAO = true
         if (y < 0) continue
         const block = world.getBlock(x, y, z)
         if (!block) continue
-        const built = buildBlockGeometry(block, x, y, z, blocksStates, world, { doAO, biome })
+        const built = buildBlockGeometry(block, x, y, z, blocksStates, world, { doAO, palette })
         if (built) {
           // 索引偏移 = 本块首顶点在累计缓冲里的位置（appendGeometry 只平移索引）
           const base = attr.positions.length / 3
-          const partition = block.transparent ? attr.alphaIndices : attr.opaqueIndices
+          const partition = built.liquid === 'water'
+            ? attr.waterIndices
+            : built.liquid === 'lava'
+              ? attr.lavaIndices
+              : block.transparent ? attr.alphaIndices : attr.opaqueIndices
           for (let i = 0; i < built.indices.length; i++) partition.push(built.indices[i] + base)
           appendGeometry(attr, built)
           any = true

@@ -5,6 +5,7 @@
 //   GET /events            SSE：column/block/center/info 通知
 //   GET /api/blocksStates   viewer-assets/blocksStates/1.20.1.json（方块几何/模型）
 //   GET /api/blocksStateMeta  stateId→(方块名,属性) 解码元数据（启动时一次性构建）
+//   GET /api/tints          按 version+biome 解析出的生物群系调色板（tint-palette.js）
 //   GET /api/info           服务信息（版本/生物群系/核心状态）
 //   其余路径               cwd 静态文件（viewer-live.html、src/…、viewer-assets/…）
 'use strict'
@@ -14,6 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import zlib from 'node:zlib'
 import { createRequire } from 'node:module'
+import { buildTintPalette } from './tint-palette.js'
 
 const require = createRequire(import.meta.url)
 
@@ -66,6 +68,8 @@ export class LiveServer {
     this.textureFile = path.join(this.assetDir, 'textures', `${this.version}.png`)
     this.stateMetaCache = null
     this._metaError = null
+    this._tints = null
+    this._tintsError = null
     this._keepAlive = null
   }
 
@@ -100,6 +104,7 @@ export class LiveServer {
       if (pathname === '/chunk') return this._handleChunk(req, res, url)
       if (pathname === '/api/blocksStates') return this._handleBlocksStates(res)
       if (pathname === '/api/blocksStateMeta') return this._handleStateMeta(res)
+      if (pathname === '/api/tints') return this._handleTints(res)
       if (pathname === '/api/info') return this._handleInfo(res)
       return this._handleStatic(pathname, res)
     } catch (err) {
@@ -232,6 +237,32 @@ export class LiveServer {
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'text/plain' })
       res.end(`stateMeta error: ${err.message}`)
+    }
+  }
+
+  // 生物群系调色板（按版本数据解析；每个实例只算一次）
+  _buildTints () {
+    if (this._tints) return this._tints
+    if (this._tintsError) throw this._tintsError
+    try {
+      const built = buildTintPalette({ version: this.version, biome: this.biome })
+      const s = built.sources
+      console.log(`[liveview] 调色板已解析 ${this.version}/${this.biome}` +
+        ` | grass=${s.grass} foliage=${s.foliage} water=${s.water}`)
+      this._tints = built
+      return built
+    } catch (err) {
+      this._tintsError = err
+      throw err
+    }
+  }
+
+  _handleTints (res) {
+    try {
+      sendJson(res, this._buildTints().palette)
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' })
+      res.end(`tints error: ${err.message}`)
     }
   }
 

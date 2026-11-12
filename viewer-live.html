@@ -105,7 +105,7 @@
 
 <div class="hud" id="hud">
   <h1><span class="dot" id="dot"></span>Minecraft 1.20.1 实时查看器</h1>
-  <div class="sub">自研渲染核心 · viewer-assets 2048 图集 · Worker 建网格 · SSE 实时区块流</div>
+  <div class="sub">自研渲染核心 · 统一着色器管线 · viewer-assets 2048 图集 · Worker 建网格 · SSE 实时区块流</div>
   <div class="badges">
     <span class="badge">核心 v1</span>
     <span class="badge" id="badge-mode">biome: plains</span>
@@ -135,6 +135,7 @@
 <script type="module">
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { createBlockMaterial, createTimeUniform } from './src/viewer-web/materials.js'
 // 注意：import * as THREE 的命名空间对象是只读的（module namespace），不能挂属性
 //（THREE.OrbitControls = X 会抛 TypeError）。因此控件用上面的具名导入；window.THREE
 // 只是把引用交给 Console/boot 使用，也不要再往其上赋值。
@@ -219,58 +220,68 @@ function loadAtlasTexture () {
 }
 
 // ============ 几何 Mesh 管理 ============
-const BASE_MAT_OPTS = { vertexColors: true, side: THREE.DoubleSide, alphaTest: 0.35 }
+// 四类材质通道：索引由 Worker 按方块语义分装好，空数组表示该 section 没有这类三角。
+// 拆通道的原因：
+//   1) 不透明面若与玻璃面同处一个 transparent mesh，mesh 内三角形不做片元级排序，
+//      玻璃先画并写 depth，实心面后画被 depth test 丢弃 → 透过玻璃"消失"（透视回归根因）；
+//   2) 水需要半透明混合与 UV 动画，岩浆需要独立的滚动速度，都不能与地形共用一份材质。
+const MESH_KINDS = [
+  { kind: 'opaque', pick: (d) => d.opaqueIdx },
+  { kind: 'alpha', pick: (d) => d.alphaIdx },
+  { kind: 'water', pick: (d) => d.waterIdx },
+  { kind: 'lava', pick: (d) => d.lavaIdx }
+]
+const timeUniform = createTimeUniform()
+let tiles = null // { water:[u,v,su,sv], lava:[…] }（Worker ready 时下发，供液体 UV 动画）
 
-function addGeometry ({ key, origin, positions, normals, colors, uvs, opaqueIdx, alphaIdx }) {
+function addGeometry (data) {
+  const { key, origin, positions, normals, colors, uvs } = data
   const existing = meshes.get(key)
   if (existing) for (const m of existing.parts) if (m) removeMeshObject(m)
 
-  // section 几何拆成两个 Mesh：不透明部分 + alpha 半透明部分（染色玻璃/冰等）。
-  // three 恒先渲染全部不透明对象、再按深度渲染透明对象；若玻璃面与实心面塞进同一个
-  // transparent mesh，mesh 内三角形不做片元级排序——玻璃先画并写 depth，石块面后画被
-  // depth test 丢弃 → 透过玻璃看到实心方块"消失"（透视回归的根因）。拆分后石块在
-  // 不透明 pass 画全、玻璃在透明 pass 后混合，顺序天然正确。
   const fade = !existing
   const parts = []
-  const specs = [
-    { idx: opaqueIdx, persistTransparent: false },
-    { idx: alphaIdx, persistTransparent: true }
-  ]
-  for (const spec of specs) {
-    if (!spec.idx || spec.idx.length === 0) { parts.push(null); continue }
+  for (const spec of MESH_KINDS) {
+    const idx = spec.pick(data)
+    if (!idx || idx.length === 0) { parts.push(null); continue }
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
     geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
-    geo.setIndex(new THREE.BufferAttribute(spec.idx, 1))
-    // 淡入只在 transparent 通道进行：新建走 0→1 渐显；dirty 重建直接终态（防高频置 0）
-    const mat = new THREE.MeshBasicMaterial(Object.assign({
+    geo.setIndex(new THREE.BufferAttribute(idx, 1))
+    const mat = createBlockMaterial({
       map: firstTexture,
-      transparent: fade || spec.persistTransparent,
-      opacity: fade ? 0 : 1
-    }, BASE_MAT_OPTS))
+      kind: spec.kind,
+      tile: tiles ? tiles[spec.kind] : null,
+      time: timeUniform
+    })
     const mesh = new THREE.Mesh(geo, mat)
     mesh.name = key
     // 渲染核心局部坐标 = 世界 − 8（(x&15)−8 范围 [-8,7]），mesh 放在 section 原点 + 8
     mesh.position.set(origin.x + 8, origin.y + 8, origin.z + 8)
     scene.add(mesh)
-    if (fade) fadeIn(mesh, spec.persistTransparent)
+    if (fade) fadeIn(mat)
     parts.push(mesh)
   }
   meshes.set(key, { parts, origin })
 }
 
-function fadeIn (mesh, persistTransparent) {
+/**
+ * 淡入：uOpacity 0→1。不透明通道平时不参与混合，淡入期间临时打开 transparent，
+ * 结束后恢复（与内置材质时期行为一致，避免新 section 硬弹出）。
+ */
+function fadeIn (material) {
+  const blendDuringFade = !material.transparent
+  if (blendDuringFade) { material.transparent = true; material.needsUpdate = true }
   const t0 = performance.now()
   const step = () => {
     const p = clamp((performance.now() - t0) / 180, 0, 1)
-    mesh.material.opacity = 1 - Math.pow(1 - p, 2)
+    material.uniforms.uOpacity.value = 1 - Math.pow(1 - p, 2)
     if (p < 1) requestAnimationFrame(step)
     else {
-      // 不透明部分淡入后离开透明渲染通道；alpha 部分保持常驻（r152+ 需 needsUpdate 生效）
-      mesh.material.transparent = persistTransparent
-      mesh.material.needsUpdate = true
+      material.uniforms.uOpacity.value = 1
+      if (blendDuringFade) { material.transparent = false; material.needsUpdate = true }
     }
   }
   step()
@@ -306,6 +317,7 @@ function startWorker (tex, initInfo) {
     switch (data.type) {
       case 'ready': {
         workerReady = true
+        tiles = data.tiles || null
         setStreamState('connected')
         // 用已有 bot 位置初始化
         if (botPos) postCenter(botPos)
@@ -592,6 +604,10 @@ let prevFollowTarget = null
 function animate () {
   requestAnimationFrame(animate)
   controls.update()
+  // 液体 UV 动画：所有液体材质共享该 uniform，每帧只写一次。
+  // 取模 1200s 是四种滚动速度（0.08/0.12/0.03/0.045）的公共周期整数倍，
+  // 既避免长时间运行后 float 精度下降导致的 UV 抖动，又保证回绕处无跳变。
+  timeUniform.value = (performance.now() / 1000) % 1200
   // 跟随 bot：整组视角随 bot 平移（保留用户相对视角）
   if (followBot && botPos) {
     const t = new THREE.Vector3(botPos.x, botPos.y + 0.2, botPos.z)

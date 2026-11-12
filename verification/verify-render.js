@@ -10,7 +10,9 @@
  *            · 几何边界：顶点模型像素落在 0..16 方块盒内（无出界/缩放漂移）
  *            · UV：全部落在图集 [0,1] 且每面 4 顶点 UV 不退化
  *            · tint：草/叶/常绿样本颜色符合白名单决策；水罐等"内容物"样本必须灰阶（无 grass 污染）
+ *              调色板由 viewer-server/tint-palette.js 按版本数据解析，不手写色值
  *            · 无 tint 方块输出颜色灰阶（r≈g≈b）
+ *            · 液体：液面高度/角点平滑/面剔除/UV 落在自身图集格子/四类材质分区
  *       2) 快照冻结：合成场景各块几何(positions/uvs/colors/indices)冻结为基线，防非语义漂移。
  *
  * 用法：
@@ -29,11 +31,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  buildBlockGeometry, selectVariants,
-  matmul3, buildRotationMatrix, TINT_PALETTE, DEFAULT_BIOME
+  buildBlockGeometry, buildSectionGeometry, selectVariants,
+  matmul3, buildRotationMatrix
 } from '../src/viewer-core/index.js'
+import { buildTintPalette } from '../src/viewer-server/tint-palette.js'
 import {
-  offsetFor, pixelAt, singleBlockFixture,
+  ANCHOR, offsetFor, pixelAt, singleBlockFixture, makeBlock, makeWorld,
   ROTATION_GROUPS, TINT_SAMPLES, SNAPSHOT_LAYOUT, makeSnapshotWorld
 } from './render-fixtures.js'
 
@@ -42,6 +45,9 @@ const ROOT = path.resolve(HERE, '..')
 const DEFAULT_ASSETS_DIR = path.join(ROOT, 'viewer-assets')
 const BASELINE_PATH = path.join(HERE, 'render-baseline.json')
 const BASELINE_FORMAT_VERSION = 1
+// 与 viewer-assets 数据同版本；调色板由服务端模块按该版本数据解析（不手写色值）
+const VERSION = '1.20.1'
+const BIOME = 'plains'
 
 const TOL = 1e-6            // 浮点容差（旋转矩阵误差 ~1e-17，断言微调容差 1e-6）
 const PIX_TOL = 1e-3        // 模型像素还原容差
@@ -71,9 +77,9 @@ function makeSuite () {
 // ---------------------------------------------------------------- 构建工具
 
 /** 渲染单个 fixture 块并返回 attr（null 视为致命构建错误） */
-function buildFixture (fx, { doAO = true, biome = DEFAULT_BIOME } = {}) {
+function buildFixture (fx, { doAO = true } = {}) {
   const { world, block, anchor } = fx
-  const attr = buildBlockGeometry(block, anchor.x, anchor.y, anchor.z, BLOCKS_STATES, world, { doAO, biome })
+  const attr = buildBlockGeometry(block, anchor.x, anchor.y, anchor.z, BLOCKS_STATES, world, { doAO, palette: PALETTE })
   if (!attr || attr.positions.length === 0) return null
   return attr
 }
@@ -235,9 +241,9 @@ function suiteInvariants (suite) {
   suite.run('I5.tint', 'I5 tint：植物染 grass/foliage/constant，水罐等不得染 grass', () => {
     const problems = []
     const expectColor = {
-      grass: TINT_PALETTE.grass[DEFAULT_BIOME],
-      foliage: TINT_PALETTE.foliage[DEFAULT_BIOME],
-      constant: TINT_PALETTE.constant.birch_leaves
+      grass: PALETTE.grass,
+      foliage: PALETTE.foliage,
+      constant: PALETTE.constant.birch_leaves
     }
     for (const s of TINT_SAMPLES) {
       const fx = singleBlockFixture(s.name) // props 取真实首个变体，tint 与 props 无关
@@ -268,6 +274,166 @@ function suiteInvariants (suite) {
         problems.push(`${name}: 存在非灰阶颜色 [${sample.map((v) => v.toFixed(4)).join(',')}]`)
       }
     }
+    return problems
+  })
+}
+
+// ---------------------------------------------------------------- 液体不变量
+
+const LIQUID_PIX = 16 // 模型 1 格 = 16 像素
+
+/** 液体 fixture：ANCHOR 处放液体，extra 为额外邻居 [[dx,dy,dz], block] */
+function liquidFixture (name, level, extra = []) {
+  const block = makeBlock(name, { level: String(level) }, { transparent: true })
+  const entries = [[ANCHOR, block]]
+  for (const [offset, neighbor] of extra) {
+    entries.push([{ x: ANCHOR.x + offset[0], y: ANCHOR.y + offset[1], z: ANCHOR.z + offset[2] }, neighbor])
+  }
+  return { world: makeWorld(entries), block, anchor: ANCHOR }
+}
+
+/** 顶点模型像素坐标 */
+function pixVertex (attr, i, off) {
+  return [
+    (attr.positions[i] - off.x) * LIQUID_PIX,
+    (attr.positions[i + 1] - off.y) * LIQUID_PIX,
+    (attr.positions[i + 2] - off.z) * LIQUID_PIX
+  ]
+}
+
+function suiteLiquids (suite) {
+  // I7 —— 液面高度：source 8/9、上方同类为 1、流动 (8-level)/9
+  suite.run('I7.liquid-height', 'I7 液面高度：source 8/9、上方同类为 1、flowing (8-level)/9', () => {
+    const problems = []
+    const cases = [
+      ['water', 0, [], 8 / 9, '水源'],
+      ['water', 0, [[[0, 1, 0], makeBlock('water', { level: '0' }, { transparent: true })]], 1, '水源上方同类'],
+      ['water', 1, [], 7 / 9, '流水 level 1'],
+      ['water', 7, [], 1 / 9, '流水 level 7'],
+      ['water', 8, [], 1, '流水 level 8（下落）'],
+      ['lava', 0, [], 8 / 9, '岩浆源'],
+      ['lava', 2, [], 6 / 9, '岩浆 level 2']
+    ]
+    for (const [name, level, extra, height, label] of cases) {
+      const fx = liquidFixture(name, level, extra)
+      const attr = buildFixture(fx)
+      if (!attr) { problems.push(`${label}: 构建失败/无几何`); continue }
+      const off = offsetFor(fx.anchor)
+      let top = -Infinity
+      for (let i = 0; i < attr.positions.length; i += 3) top = Math.max(top, pixVertex(attr, i, off)[1])
+      const expect = height * LIQUID_PIX
+      if (Math.abs(top - expect) > PIX_TOL) problems.push(`${label}: 顶面像素 ${top.toFixed(4)}，期望 ${expect.toFixed(4)}`)
+    }
+    return problems
+  })
+
+  // I7 —— 角点平滑：3×3 邻域取最大高度（高处液面把相邻低面抬平）
+  suite.run('I7.liquid-corner', 'I7 角点平滑：3×3 邻域取最大高度', () => {
+    const problems = []
+    const low = makeBlock('water', { level: '4' }, { transparent: true })
+    const src = makeBlock('water', { level: '0' }, { transparent: true })
+    const world = makeWorld([[ANCHOR, low], [{ x: ANCHOR.x - 1, y: ANCHOR.y, z: ANCHOR.z }, src]])
+    const fx = { world, block: low, anchor: ANCHOR }
+    const attr = buildFixture(fx)
+    if (!attr) return ['低处流水构建失败']
+    const off = offsetFor(fx.anchor)
+    const corners = new Map() // "x,z" → 顶点最高 y
+    for (let i = 0; i < attr.positions.length; i += 3) {
+      const [x, y, z] = pixVertex(attr, i, off)
+      const key = `${Math.round(x)},${Math.round(z)}`
+      corners.set(key, Math.max(corners.get(key) ?? -Infinity, y))
+    }
+    // 西侧两角邻接水源 → 抬到 8/9；东侧两角无更高邻居 → 保持 4/9
+    const west = 8 / 9 * LIQUID_PIX
+    const east = 4 / 9 * LIQUID_PIX
+    for (const key of ['0,0', '0,16']) {
+      const y = corners.get(key)
+      if (y === undefined) problems.push(`缺少角点 ${key}`)
+      else if (Math.abs(y - west) > PIX_TOL) problems.push(`角点 ${key} y=${y.toFixed(4)}，期望被抬到 ${west.toFixed(4)}`)
+    }
+    for (const key of ['16,0', '16,16']) {
+      const y = corners.get(key)
+      if (y === undefined) problems.push(`缺少角点 ${key}`)
+      else if (Math.abs(y - east) > PIX_TOL) problems.push(`角点 ${key} y=${y.toFixed(4)}，期望 ${east.toFixed(4)}`)
+    }
+    return problems
+  })
+
+  // I7 —— 面剔除
+  suite.run('I7.liquid-cull', 'I7 液体剔除：同类互剔、不透明方块剔侧面、透明方块不剔、未加载列剔除', () => {
+    const problems = []
+    const waterBlock = () => makeBlock('water', { level: '0' }, { transparent: true })
+    const faceCount = (fx) => {
+      const attr = buildFixture(fx)
+      return attr ? attr.indices.length / 6 : 0
+    }
+    const lone = faceCount(liquidFixture('water', 0))
+    if (lone !== 6) problems.push(`单格水源面数 ${lone}，期望 6`)
+    const column = faceCount(liquidFixture('water', 0, [[[0, 1, 0], waterBlock()]]))
+    if (column !== 5) problems.push(`水柱下格面数 ${column}，期望 5（顶面被同类剔除）`)
+    const stoneSide = faceCount(liquidFixture('water', 0, [[[-1, 0, 0], makeBlock('stone', {}, { isCube: true })]]))
+    if (stoneSide !== 5) problems.push(`贴石头面数 ${stoneSide}，期望 5（侧面被不透明立方体剔除）`)
+    const glassSide = faceCount(liquidFixture('water', 0, [[[-1, 0, 0], makeBlock('glass', {}, { isCube: true, transparent: true })]]))
+    if (glassSide !== 6) problems.push(`贴玻璃面数 ${glassSide}，期望 6（透明方块不剔除）`)
+
+    const nullWorld = {
+      getBlock (x, y, z) {
+        if (x === ANCHOR.x && y === ANCHOR.y && z === ANCHOR.z) return waterBlock()
+        if (x === ANCHOR.x + 1 && y === ANCHOR.y && z === ANCHOR.z) return null // 未加载列
+        return { name: 'air', props: {}, isCube: false, transparent: true, y }
+      }
+    }
+    const nullAttr = buildBlockGeometry(waterBlock(), ANCHOR.x, ANCHOR.y, ANCHOR.z, BLOCKS_STATES, nullWorld, { palette: PALETTE })
+    const nullFaces = nullAttr ? nullAttr.indices.length / 6 : 0
+    if (nullFaces !== 5) problems.push(`未加载列面数 ${nullFaces}，期望 5`)
+    return problems
+  })
+
+  // I7 —— UV 与着色
+  suite.run('I7.liquid-uv-tint', 'I7 液体 UV 落在自身图集格子内，水面染调色板水色、岩浆不染色', () => {
+    const problems = []
+    for (const [name, expectTint] of [['water', PALETTE.water], ['lava', [1, 1, 1]]]) {
+      const fx = liquidFixture(name, 0)
+      const attr = buildFixture(fx)
+      if (!attr) { problems.push(`${name}: 构建失败/无几何`); continue }
+      const tex = BLOCKS_STATES[name].variants[''].model.textures.particle
+      let oob = 0
+      for (let i = 0; i < attr.uvs.length; i += 2) {
+        const u = attr.uvs[i]
+        const v = attr.uvs[i + 1]
+        if (u < tex.u - TOL || u > tex.u + tex.su + TOL || v < tex.v - TOL || v > tex.v + tex.sv + TOL) oob++
+      }
+      if (oob) problems.push(`${name}: ${oob} 个 UV 越出自身格子`)
+      if (!hasColor(attr, expectTint)) {
+        problems.push(`${name}: 未找到期望色 [${expectTint.map((v) => v.toFixed(3)).join(',')}]`)
+      }
+    }
+    return problems
+  })
+
+  // I7 —— 四类材质分区
+  suite.run('I7.partition', 'I7 分区：水/岩浆/不透明/alpha 索引互不混淆且覆盖全部三角', () => {
+    const problems = []
+    const world = makeWorld([
+      [ANCHOR, makeBlock('water', { level: '0' }, { transparent: true })],
+      [{ x: ANCHOR.x + 3, y: ANCHOR.y, z: ANCHOR.z }, makeBlock('lava', { level: '0' }, { transparent: true })],
+      [{ x: ANCHOR.x + 6, y: ANCHOR.y, z: ANCHOR.z }, makeBlock('stone', {}, { isCube: true })],
+      [{ x: ANCHOR.x + 9, y: ANCHOR.y, z: ANCHOR.z }, makeBlock('glass', {}, { isCube: true, transparent: true })]
+    ])
+    const geo = buildSectionGeometry({ x: 0, y: 0, z: 0 }, world, BLOCKS_STATES, { doAO: true, palette: PALETTE })
+    if (!geo) return ['section 构建失败']
+    const parts = {
+      opaque: geo.opaqueIndices.length,
+      alpha: geo.alphaIndices.length,
+      water: geo.waterIndices.length,
+      lava: geo.lavaIndices.length
+    }
+    for (const [kind, n] of Object.entries(parts)) {
+      if (!n) problems.push(`${kind}Indices 为空`)
+      else if (n % 6 !== 0) problems.push(`${kind}Indices 索引数 ${n} 不是 6 的倍数`)
+    }
+    const sum = parts.opaque + parts.alpha + parts.water + parts.lava
+    if (sum !== geo.indices.length) problems.push(`分区索引合计 ${sum} ≠ indices ${geo.indices.length}`)
     return problems
   })
 }
@@ -355,6 +521,8 @@ function parseArgs (argv) {
 
 // ---- 全局产物（被各 suite 引用）
 let BLOCKS_STATES
+/** 服务端按版本解析的调色板（tint 断言与几何构建共用同一来源） */
+let PALETTE
 
 function main () {
   let args
@@ -367,7 +535,7 @@ function main () {
   }
   if (args.help) { usage(); process.exit(0) }
 
-  const bsFile = path.join(args.assetsDir, 'blocksStates', '1.20.1.json')
+  const bsFile = path.join(args.assetsDir, 'blocksStates', `${VERSION}.json`)
   if (!fs.existsSync(bsFile)) {
     console.error(`[ERROR] blocksStates 不存在: ${bsFile}`)
     process.exit(2)
@@ -378,10 +546,17 @@ function main () {
     console.error(`[ERROR] blocksStates 解析失败: ${err.message}`)
     process.exit(2)
   }
+  try {
+    PALETTE = buildTintPalette({ version: VERSION, biome: BIOME }).palette
+  } catch (err) {
+    console.error(`[ERROR] 调色板解析失败（${VERSION}/${BIOME}）: ${err.message}`)
+    process.exit(2)
+  }
 
   // ---- 结构性不变量（恒跑）
   const suite = makeSuite()
   suiteInvariants(suite)
+  suiteLiquids(suite)
   const invFail = suite.failCount()
   const invText = invFail === 0 ? '全部结构性不变量通过' : `${invFail} 项结构性不变量失败`
   console.log(`\n[INV] ${invText}\n`)

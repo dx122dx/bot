@@ -7,6 +7,9 @@ export const ATLAS_SIZE = 2048
 /** 空气类方块精确名单（替代 models.js 的 name.includes('air') —— 后者误伤 oak_stairs 等） */
 export const AIR_BLOCK_NAMES = new Set(['air', 'cave_air', 'void_air'])
 
+/** 液体方块名单：几何不走方块模型，由 liquids.js 单独构建（blocksStates 中液体 elements 为空） */
+export const LIQUID_NAMES = new Set(['water', 'lava'])
+
 /** 六面几何表：dir=外法线、mask1/mask2=AO 侧棱方向、corners=4 顶点 [px,py,pz,ux,uv] 布局 */
 export const elemFaces = {
   up: { dir: [0, 1, 0], mask1: [1, 1, 0], mask2: [0, 1, 1], corners: [[0, 1, 1, 0, 1], [1, 1, 1, 1, 1], [0, 1, 0, 0, 0], [1, 1, 0, 1, 0]] },

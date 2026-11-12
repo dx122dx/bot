@@ -1,31 +1,9 @@
-// tints.js —— 生物群系着色决策（迁移自 minecraft-viewer.html 硬编码 TINTS；biome 维度首期固定 plains）
+// tints.js —— 面 tint 决策（分类规则），颜色值由服务端按版本解析后注入
+//
+// 为什么要外部注入：生物群系色随游戏版本变化，且 1.19+ 的版本数据不再直接给出默认色，
+// 必须由 Node 侧结合版本 tints / colormap 推导（见 src/viewer-server/tint-palette.js）。
+// 本文件只保留「哪些方块参与哪种着色」的语义分类，不持有任何色值。
 'use strict'
-
-export const DEFAULT_BIOME = 'plains'
-
-/**
- * 色板（与 minecraft-viewer.html TINTS 同值）。
- * grass/foliage 按 biome 索引（当前仅 plains）；redstone 按 power 0..15 档；constant 按方块名。
- * 结构上允许未来补充其他 biome 值。
- */
-export const TINT_PALETTE = {
-  grass: { plains: [0.847, 0.847, 0.741] },
-  foliage: { plains: [0.588, 0.773, 0.184] },
-  water: [0.4, 0.588, 0.824],
-  redstone: [
-    [0.188, 0.188, 0.188], [0.278, 0.278, 0.278], [0.302, 0.302, 0.302],
-    [0.325, 0.325, 0.325], [0.35, 0.35, 0.35], [0.376, 0.376, 0.376],
-    [0.403, 0.403, 0.403], [0.427, 0.427, 0.427], [0.452, 0.452, 0.452],
-    [0.478, 0.478, 0.478], [0.502, 0.502, 0.502], [0.527, 0.527, 0.527],
-    [0.553, 0.553, 0.553], [0.577, 0.577, 0.577], [0.604, 0.604, 0.604],
-    [0.631, 0.631, 0.631]
-  ],
-  constant: {
-    birch_leaves: [0.329, 0.745, 0.325],
-    spruce_leaves: [0.251, 0.49, 0.176],
-    lily_pad: [0.082, 0.447, 0.208]
-  }
-}
 
 // —— tintindex===0 时实际参与生物群系染色的植物白名单（根因修复 #3：删除"默认 grass"兜底）——
 // 判定依据：tintindex 只是"该面参与 block tint"的标记，具体颜色由方块语义决定。
@@ -46,31 +24,39 @@ export const FOLIAGE_TINT_NAMES = new Set([
   'mangrove_leaves', 'jungle_leaves', 'acacia_leaves', 'dark_oak_leaves', 'cherry_leaves'
 ])
 
+function requirePalette (palette) {
+  if (!palette || !palette.grass || !palette.foliage) {
+    throw new Error('方块 tint 需要服务端调色板（GET /api/tints），不得静默使用白色')
+  }
+  return palette
+}
+
 /**
  * 由方块 + 面 tintindex 决策着色值（无 tint 时返回 null，调用方保持白色 [1,1,1]）。
- * 规则：tintindex===0 才参与；redstone_wire 按 power 档红石色；birch/spruce/lily_pad
- * 用 constant（与 prismarine models.js 一致）；leaves 系与 FOLIAGE_TINT_NAMES 用 foliage 色；
+ * 规则：tintindex===0 才参与；redstone_wire 按 power 档红石色；constant 名单（birch/spruce/
+ * lily_pad 等，随版本数据下发）优先；leaves 系与 FOLIAGE_TINT_NAMES 用 foliage 色；
  * GRASS_TINT_NAMES 用 grass 色；其余方块不染色（保持纹理本色）。
  * tintindex 非 0（如 pink_petals 的 1）同样不染色，与 prismarine models.js 行为一致。
  *
  * @param {import('./constants.js').BlockDescriptor} block
  * @param {number|undefined} tintindex
- * @param {{biome?:string,palette?:object}} [opts]
+ * @param {{grass:number[],foliage:number[],redstone:number[][],constant:Object<string,number[]>}} palette
  * @returns {number[]|null}
  */
-export function resolveTint (block, tintindex, { biome = DEFAULT_BIOME, palette = TINT_PALETTE } = {}) {
+export function resolveTint (block, tintindex, palette) {
   if (tintindex === undefined || tintindex !== 0) return null
   const name = block.name
   if (name === 'redstone_wire') {
-    return palette.redstone[block.props.power | 0] || palette.redstone[0]
+    const table = requirePalette(palette).redstone
+    return table[block.props.power | 0] || table[0]
   }
-  const constant = palette.constant[name]
-  if (constant) return constant // birch_leaves / spruce_leaves / lily_pad
+  const constant = palette && palette.constant && palette.constant[name]
+  if (constant) return constant // birch_leaves / spruce_leaves / lily_pad 等
   if (name.includes('leaves') || FOLIAGE_TINT_NAMES.has(name)) {
-    return palette.foliage[biome] || palette.foliage[DEFAULT_BIOME]
+    return requirePalette(palette).foliage
   }
   if (GRASS_TINT_NAMES.has(name)) {
-    return palette.grass[biome] || palette.grass[DEFAULT_BIOME]
+    return requirePalette(palette).grass
   }
   return null // 不再兜底 grass：水罐/雪罐等保持纹理本色
 }

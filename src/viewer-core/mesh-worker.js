@@ -7,7 +7,7 @@
 //
 // 主 ⇄ Worker 协议：
 //   主 → Worker
-//     {type:'init', viewDistance}          —— 触发 Worker 自取 /api/blocksStateMeta + /api/blocksStates
+//     {type:'init', viewDistance}          —— 触发 Worker 自取 /api/blocksStateMeta + /api/blocksStates + /api/tints
 //     {type:'center', x,y,z}               —— bot 中心（重算矩形：新列 need-column / 过期列 remove-column）
 //     {type:'column', cx,cz}               —— 服务端 SSE column 通知（可能代表列刚就绪，可重试空列）
 //     {type:'chunk', cx,cz, buffer:<AB>}   —— /chunk 响应（transfer）
@@ -16,27 +16,28 @@
 //     {type:'rebuild', ao}                 —— AO/重建（全量重算现有几何）
 //     {type:'query', id, x,y,z}            —— 悬停块名查询
 //   Worker → 主
-//     {type:'ready'}
+//     {type:'ready', tiles:{water,lava}}    —— tiles 为液体在图集中的格子 [u,v,su,sv]（着色器动画用）
 //     {type:'need-column', cx,cz}          —— 主线程 fetch /chunk 后回传 chunk/chunk-empty
 //     {type:'remove-column', cx,cz}        —— 主线程卸载对应 Mesh 与几何
-//     {type:'geometry', key, origin, positions,normals,colors,uvs,opaqueIdx,alphaIdx}  (全部 transfer)
-//        opaqueIdx/alphaIdx：渲染核心把三角按"方块是否半透明"分装成两组，页面据此拆两个 mesh
+//     {type:'geometry', key, origin, positions,normals,colors,uvs,opaqueIdx,alphaIdx,waterIdx,lavaIdx}
+//        （全部 transfer）四组索引对应四种材质通道：不透明 / alpha 混合 / 水 / 岩浆
 //     {type:'gone', key}                   —— 该 section 现无几何（清空/全空），主线程移除 Mesh
 //     {type:'blockinfo', id, name, x,y,z}  —— 悬停查询应答
 //     {type:'stats', dirty, columns, sections}
 'use strict'
 
 import { createStateDecoder, MirrorWorld } from './world-mirror.js'
-import { buildSectionGeometry } from './index.js'
+import { buildSectionGeometry, liquidTexture } from './index.js'
 
 let decoder = null
 let mirror = null
 let blocksStates = null
+/** 服务端按版本解析的调色板（/api/tints），tint 色值唯一来源 */
+let palette = null
 
 let center = { x: 0, y: 64, z: 0 }
 let viewDistance = 6
 let doAO = true
-const biome = 'plains'
 
 const requested = new Map() // key "cx,cz" → true（已请求 /chunk，等待响应）
 const emptyCols = new Set() // key → 服务端列未就绪（空响应），等 column 通知/定时重试
@@ -141,7 +142,7 @@ function flushDirty () {
     if (!item) continue
     let attr = null
     try {
-      attr = buildSectionGeometry(item.origin, mirror, blocksStates, { doAO, biome })
+      attr = buildSectionGeometry(item.origin, mirror, blocksStates, { doAO, palette })
     } catch (err) {
       console.error(`[mesh-worker] section ${key} 几何失败:`, err)
       post('geometry-error', { key, message: (err && err.message) || String(err) })
@@ -151,13 +152,16 @@ function flushDirty () {
       const normals = new Float32Array(attr.normals)
       const colors = new Float32Array(attr.colors)
       const uvs = new Float32Array(attr.uvs)
-      // 渲染核心已按方块是否半透明把三角分装；页面据此拆"不透明/alpha 混合"两个 mesh。
-      // 空数组也随消息传递（纯不透明 section 的 alphaIdx 为空），页面据此只建需要的部分。
+      // 渲染核心已按材质通道把三角分装；页面据此拆"不透明/alpha 混合/水/岩浆"四个 mesh。
+      // 空数组也随消息传递（纯不透明 section 的其余索引为空），页面据此只建需要的部分。
       const opaqueIdx = new Uint32Array(attr.opaqueIndices || [])
       const alphaIdx = new Uint32Array(attr.alphaIndices || [])
+      const waterIdx = new Uint32Array(attr.waterIndices || [])
+      const lavaIdx = new Uint32Array(attr.lavaIndices || [])
       geoKeys.set(key, true)
-      post('geometry', { key, origin: item.origin, positions, normals, colors, uvs, opaqueIdx, alphaIdx },
-        [positions.buffer, normals.buffer, colors.buffer, uvs.buffer, opaqueIdx.buffer, alphaIdx.buffer])
+      post('geometry', { key, origin: item.origin, positions, normals, colors, uvs, opaqueIdx, alphaIdx, waterIdx, lavaIdx },
+        [positions.buffer, normals.buffer, colors.buffer, uvs.buffer,
+          opaqueIdx.buffer, alphaIdx.buffer, waterIdx.buffer, lavaIdx.buffer])
     } else if (geoKeys.has(key)) {
       geoKeys.delete(key)
       post('gone', { key })
@@ -228,16 +232,30 @@ self.onmessage = ({ data }) => {
   }
 }
 
+const fetchJson = (url) => fetch(url).then((r) => {
+  if (!r.ok) throw new Error(`${url} HTTP ${r.status}`)
+  return r.json()
+})
+
+/** 液体纹理在图集中的格子 [u,v,su,sv]（着色器需在格子内做 UV 循环动画） */
+function liquidTileOf (name) {
+  const tex = liquidTexture({ name, props: {} }, blocksStates)
+  return [tex.u, tex.v, tex.su, tex.sv]
+}
+
 async function initWorker () {
   try {
-    const [metaRes, statesRes] = await Promise.all([
-      fetch('/api/blocksStateMeta').then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() }),
-      fetch('/api/blocksStates').then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json() })
+    const [metaRes, statesRes, tintsRes] = await Promise.all([
+      fetchJson('/api/blocksStateMeta'),
+      fetchJson('/api/blocksStates'),
+      fetchJson('/api/tints')
     ])
     decoder = createStateDecoder(metaRes)
     mirror = new MirrorWorld(decoder)
     blocksStates = statesRes
-    post('ready')
+    palette = tintsRes
+    const tiles = { water: liquidTileOf('water'), lava: liquidTileOf('lava') }
+    post('ready', { tiles })
     if (center.x !== 0 || center.z !== 0) handleCenter()
   } catch (err) {
     post('error', { message: `worker 数据加载失败: ${err.message}` })
